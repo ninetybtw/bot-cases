@@ -5,3 +5,5 @@ __pycache__/
 data/raw/
 data/*.sqlite3*
 preview/dist/
+data/cache/
+data/catalog.tmp

@@ -1,3 +1,8 @@
+"""Операции с балансом и предметами: проверки M3, M5, M6, M7, M8 из docs/TASKS.md."""
+
+import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -6,11 +11,13 @@ from skinsbot import rules
 from skinsbot.service import Catalog, Game, GameError
 
 ROOT = Path(__file__).resolve().parent.parent
+CATALOG = Catalog(ROOT / "data" / "catalog.json")
+DAY = 86400
 
 
 class Clock:
     def __init__(self):
-        self.t = 1_800_000_000.0
+        self.t = 1_800_000_000.0  # 15.01.2027, 11:00 МСК
 
     def __call__(self):
         return self.t
@@ -19,118 +26,531 @@ class Clock:
 @pytest.fixture
 def g(tmp_path):
     clock = Clock()
-    game = Game(str(tmp_path / "t.sqlite3"), Catalog(ROOT / "data" / "catalog.json"), clock=clock)
+    game = Game(str(tmp_path / "t.sqlite3"), CATALOG, clock=clock)
     game.clock_obj = clock
     game.ensure_user(1, "Ann")
     return game
 
 
-def test_new_user_has_start_balance_and_free_spins(g):
-    s = g.state(1)
-    assert s["user"]["balance"] == g.catalog.unit_cents * rules.START_BALANCE_CASES
-    assert s["user"]["energy"] == 3
-    assert s["items"] == []
+def rich(g, uid, cents=100_000_000):
+    """Выдать монеты через ledger, чтобы сумма журнала совпадала с балансом."""
+    with g.tx():
+        current = g.conn.execute("SELECT balance FROM players WHERE user_id=?", (uid,)).fetchone()[0]
+        g._ledger(uid, cents - current, "test_grant")
 
 
-def test_free_spin_uses_energy_and_regenerates(g):
-    free = g.catalog.free_case_id
-    g.spin(1, free, 1, free=True)
-    g.spin(1, free, 1, free=True)
-    g.spin(1, free, 1, free=True)
-    with pytest.raises(GameError):
-        g.spin(1, free, 1, free=True)
-    g.clock_obj.t += rules.ENERGY_PERIOD + 1
-    assert g.state(1)["user"]["energy"] == 1
-    assert len(g.state(1)["items"]) == 3
+def ledger_sum(g, uid):
+    return g.conn.execute("SELECT SUM(delta) FROM ledger WHERE user_id=?", (uid,)).fetchone()[0]
 
 
-def test_paid_spin_charges_and_is_idempotent(g):
+def balance(g, uid):
+    return g.me(uid)["balance_cents"]
+
+
+def cheap_case(g):
+    return g.catalog.free_case_id
+
+
+# --- профиль и валюта --------------------------------------------------------------------
+
+
+def test_new_player(g):
+    me = g.me(1)
+    assert me["balance_cents"] == g.catalog.unit_cents * rules.CFG["start_balance_cases"]
+    assert me["energy"]["now"] == 3 and me["slots"]["total"] == 200
+    assert me["currency"]["symbol"] == "₽" and me["country"] == "RU"
+    assert ledger_sum(g, 1) == me["balance_cents"]
+
+
+def test_country_by_language_and_30_days(g):
+    g.ensure_user(5, "Asel", lang="kk")
+    assert g.me(5)["country"] == "KZ"
+    g.set_country(5, "KZ")
+    with pytest.raises(GameError) as e:
+        g.set_country(5, "BY")
+    assert e.value.code == "NOT_ALLOWED_YET"
+    g.clock_obj.t += 31 * DAY
+    assert g.set_country(5, "BY")["currency"]["decimals"] == 2
+
+
+def test_kz_and_ru_pay_same_kopecks(g):
+    g.ensure_user(2, "Bob", lang="kk")
     case = g.catalog.case_list[0]["id"]
-    before = g.state(1)["user"]["balance"]
-    r1 = g.spin(1, case, 1, idem_key="k1")
-    r2 = g.spin(1, case, 1, idem_key="k1")
-    assert r1 == r2
-    after = g.state(1)
-    assert after["user"]["balance"] == before - g.catalog.case_price_cents(case)
-    assert len(after["items"]) == 1
+    before = {u: balance(g, u) for u in (1, 2)}
+    for u in (1, 2):
+        g.spin(u, case_id=case, count=1, confirmed=True)
+    assert before[1] - balance(g, 1) == before[2] - balance(g, 2) == g.catalog.case_price(case)
 
 
-def test_not_enough_money(g):
+def test_error_text_in_player_currency(g):
+    g.ensure_user(3, "Bek", lang="kk")
+    g.conn.execute("UPDATE players SET balance=0 WHERE user_id=3")
+    with pytest.raises(GameError) as e:
+        g.spin(3, case_id=cheap_case(g), count=1)
+    assert e.value.code == "NOT_ENOUGH_COINS" and "₸" in e.value.message
+
+
+# --- спин ----------------------------------------------------------------------------------
+
+
+def test_free_spins_and_energy(g):
+    g.spin(1, case_id=cheap_case(g), source="free", count=3)
+    with pytest.raises(GameError) as e:
+        g.spin(1, case_id=cheap_case(g), source="free", count=1)
+    assert e.value.code == "NO_ENERGY"
+    g.clock_obj.t += 3 * 3600 + 1
+    assert g.me(1)["energy"]["now"] == 1
+
+
+def test_free_only_on_cheapest_case(g):
+    other = next(c["id"] for c in g.catalog.case_list if c["id"] != cheap_case(g))
+    with pytest.raises(GameError):
+        g.spin(1, case_id=other, source="free")
+
+
+def test_idempotency_50_parallel_same_key(g):
+    rich(g, 1)
+    case = cheap_case(g)
+    with ThreadPoolExecutor(16) as ex:
+        results = list(ex.map(lambda _: g.spin(1, case_id=case, count=1, confirmed=True, idem_key="same"), range(50)))
+    assert all(r == results[0] for r in results)
+    assert g.conn.execute("SELECT COUNT(*) FROM drops WHERE user_id=1").fetchone()[0] == 1
+
+
+def test_50_parallel_spins_balance_for_10(g):
+    case = cheap_case(g)
+    price = g.catalog.case_price(case)
+    rich(g, 1, price * 10)
+    errors = []
+
+    def go(n):
+        try:
+            g.spin(1, case_id=case, count=1, confirmed=True, idem_key=f"k{n}")
+        except GameError as e:
+            errors.append(e.code)
+
+    with ThreadPoolExecutor(16) as ex:
+        list(ex.map(go, range(50)))
+    assert g.conn.execute("SELECT COUNT(*) FROM drops WHERE user_id=1").fetchone()[0] == 10
+    assert balance(g, 1) == 0
+    assert set(errors) == {"NOT_ENOUGH_COINS"}
+    assert ledger_sum(g, 1) == 0
+
+
+def test_multi_spin_counts(g):
+    rich(g, 1)
+    for count in (3, 5, 10):
+        r = g.spin(1, case_id=cheap_case(g), count=count, confirmed=True)
+        assert len(r["drops"]) == count
+        assert all(d["reel"][d["stop_index"]]["name"] == d["items"][0]["name"] for d in r["drops"])
+    with pytest.raises(GameError):
+        g.spin(1, case_id=cheap_case(g), count=2)
+
+
+def test_confirm_required(g):
+    rich(g, 1, 400_000)
     case = g.catalog.case_list[-1]["id"]
     with pytest.raises(GameError) as e:
-        for _ in range(20):
-            g.spin(1, case, 10)
-    assert e.value.code == "no_money"
+        g.spin(1, case_id=case, count=10)
+    assert e.value.code == "CONFIRM_REQUIRED" and e.value.extra["pause_s"] == 3
+    g.spin(1, case_id=case, count=10, confirmed=True)
 
 
-def test_sell_and_lock(g):
-    item = g.spin(1, g.catalog.free_case_id, 1, free=True)["items"][0]
+def test_levels_coin_only_no_pity(g):
+    rich(g, 1)
+    g.conn.execute("UPDATE players SET since_epic=40 WHERE user_id=1")
+    with pytest.raises(GameError):
+        g.spin(1, level="epic", source="free")
+    r = g.spin(1, level="epic", count=5, confirmed=True)
+    assert all(rules.at_least(d["items"][0]["tier"], "epic") for d in r["drops"])
+    assert g.conn.execute("SELECT since_epic FROM players WHERE user_id=1").fetchone()[0] == 40
+    assert r["drops"][0]["items"][0]["one_in"] == round(1 / rules.case_odds()[r["drops"][0]["items"][0]["tier"]])
+
+
+def test_level_daily_limit(g):
+    rich(g, 1)
+    g.spin(1, level="rare", count=10, confirmed=True)
+    g.spin(1, level="rare", count=10, confirmed=True)
+    with pytest.raises(GameError) as e:
+        g.spin(1, level="rare", count=1, confirmed=True)
+    assert e.value.code == "LEVEL_LIMIT"
+
+
+def test_coin_daily_limit_grows_with_level(g):
+    rich(g, 1)
+    case = cheap_case(g)
+    while (left := g.me(1)["coin_spins_left"]) > 0:
+        g.spin(1, case_id=case, count=next(c for c in (10, 5, 3, 1) if c <= left), confirmed=True)
+    with pytest.raises(GameError) as e:
+        g.spin(1, case_id=case, count=1, confirmed=True)
+    assert e.value.code == "DAILY_LIMIT"
+    assert g.me(1)["user"]["level"] > 1  # опыт за спины поднял уровень, а с ним и лимит
+    assert g.coin_spins_limit(1) == 30 and g.coin_spins_limit(31) == 60
+
+
+def test_overflow_and_expiry(g):
+    rich(g, 1)
+    g.conn.execute("UPDATE players SET slots=5 WHERE user_id=1")
+    r = g.spin(1, case_id=cheap_case(g), count=10, confirmed=True)
+    assert r["overflow"] == 5
+    me = g.me(1)
+    assert me["slots"]["used"] == 5 and me["slots"]["overflow"] == 5
+    g.spin(1, case_id=cheap_case(g), count=10, confirmed=True)
+    g.spin(1, case_id=cheap_case(g), count=5, confirmed=True)
+    with pytest.raises(GameError) as e:
+        g.spin(1, case_id=cheap_case(g), count=1, confirmed=True)
+    assert e.value.code == "INVENTORY_FULL"
+    bal = balance(g, 1)
+    g.clock_obj.t += 49 * 3600
+    assert g.overflow_expire() == 20
+    assert balance(g, 1) > bal and g.me(1)["slots"]["overflow"] == 0
+
+
+def test_luck_spends_per_spin(g):
+    rich(g, 1)
+    g.conn.execute("UPDATE players SET luck_mult=2, luck_left=10 WHERE user_id=1")
+    g.spin(1, case_id=cheap_case(g), count=3, confirmed=True)
+    assert g.me(1)["luck"]["spins_left"] == 7
+    g.spin(1, level="rare", count=1, confirmed=True)
+    assert g.me(1)["luck"]["spins_left"] == 7
+
+
+# --- коллекция ----------------------------------------------------------------------------------
+
+
+def test_sell_and_undo_restore_state(g):
+    item = g.spin(1, case_id=cheap_case(g), source="free")["drops"][0]["items"][0]
+    before = g.conn.execute("SELECT state, owner, locked, hold_until, overflow_until FROM items WHERE id=?", (item["id"],)).fetchone()
+    bal = balance(g, 1)
+    sale = g.sell(1, [item["id"]])
+    assert sale["total_cents"] == item["sell_cents"] == item["price_cents"] * 60 // 100
+    assert balance(g, 1) == bal + sale["total_cents"]
+    g.undo_sale(1, sale["sale_id"])
+    after = g.conn.execute("SELECT state, owner, locked, hold_until, overflow_until FROM items WHERE id=?", (item["id"],)).fetchone()
+    assert tuple(before) == tuple(after) and balance(g, 1) == bal
+    with pytest.raises(GameError):
+        g.undo_sale(1, sale["sale_id"])
+    assert ledger_sum(g, 1) == balance(g, 1)
+
+
+def test_undo_window_and_daily_limit(g):
+    rich(g, 1)
+    items = [d["items"][0]["id"] for d in g.spin(1, case_id=cheap_case(g), count=10, confirmed=True)["drops"]]
+    for i in items[:5]:
+        g.undo_sale(1, g.sell(1, [i], confirmed=True)["sale_id"])
+    with pytest.raises(GameError) as e:
+        g.undo_sale(1, g.sell(1, [items[5]], confirmed=True)["sale_id"])
+    assert e.value.code == "DAILY_LIMIT"
+    sale = g.sell(1, [items[6]], confirmed=True)
+    g.clock_obj.t += 11 * 60
+    with pytest.raises(GameError):
+        g.undo_sale(1, sale["sale_id"])
+
+
+def test_lock_blocks_sell_and_unlock_needs_confirm(g):
+    item = g.spin(1, case_id=cheap_case(g), source="free")["drops"][0]["items"][0]
     g.lock(1, item["id"], True)
-    with pytest.raises(GameError):
+    with pytest.raises(GameError) as e:
         g.sell(1, [item["id"]])
-    g.lock(1, item["id"], False)
-    bal = g.state(1)["user"]["balance"]
-    res = g.sell(1, [item["id"]])
-    assert res["total"] == item["sell_price"] == round(item["price"] * 0.6)
-    assert g.state(1)["user"]["balance"] == bal + res["total"]
+    assert e.value.code == "ITEM_LOCKED"
     with pytest.raises(GameError):
-        g.sell(1, [item["id"]])
+        g.lock(1, item["id"], False)
+    g.lock(1, item["id"], False, confirm=True)
+    g.sell(1, [item["id"]], confirmed=True)
 
 
-def test_contract_five_rare(g):
-    g.ensure_user(2, "Bob")
-    case = g.catalog.case_list[0]["id"]
+def test_showcase_and_duplicates(g):
+    rich(g, 1)
+    ids = [d["items"][0]["id"] for d in g.spin(1, case_id=cheap_case(g), count=10, confirmed=True)["drops"]]
+    g.set_showcase(1, ids[:3])
+    assert g.me(1)["showcase"] == ids[:3]
+    quote = g.duplicates_quote(1)
+    assert all(i in ids for i in quote["item_ids"])
+
+
+# --- контракты и апгрейдер -------------------------------------------------------------------------
+
+
+def five_rare(g, uid):
+    rich(g, uid)
     rare = []
     while len(rare) < 5:
-        g.conn.execute("UPDATE users SET balance=100000000 WHERE id=2")
-        for it in g.spin(2, case, 10)["items"]:
-            if it["tier"] == "rare":
-                rare.append(it["id"])
-    res = g.contract(2, rare[:5])
+        for d in g.spin(uid, case_id=cheap_case(g), count=10, confirmed=True)["drops"]:
+            if d["items"][0]["tier"] == "rare":
+                rare.append(d["items"][0]["id"])
+        g.conn.execute("UPDATE players SET coin_count=0 WHERE user_id=?", (uid,))
+    return rare[:5]
+
+
+def test_contract_rare_to_epic(g):
+    ids = five_rare(g, 1)
+    res = g.contract(1, ids)
     assert res["success"] and res["item"]["tier"] == "epic"
     with pytest.raises(GameError):
-        g.contract(2, rare[:5])
+        g.contract(1, ids)
 
 
-def test_upgrade_flow(g):
-    item = g.spin(1, g.catalog.free_case_id, 1, free=True)["items"][0]
-    g.spin(1, g.catalog.free_case_id, 1, free=True)
-    targets = g.upgrade_targets(item["price"], 2)
-    assert targets and all(t["price"] > item["price"] for t in targets)
-    t = targets[0]
-    res = g.upgrade(1, [item["id"]], 0, t["catalog_id"], t["key"])
-    assert 0 < res["chance"] < 1
-    ids = {i["id"] for i in g.state(1)["items"]}
-    assert item["id"] not in ids
+def test_upgrade_flow_and_config_changed(g):
+    rich(g, 1)
+    ids = [d["items"][0] for d in g.spin(1, case_id=cheap_case(g), count=10, confirmed=True)["drops"]]
+    stake = next(i for i in ids if i["tier"] == "rare")
+    target = g.upgrade_targets(stake["price_cents"], 2)[0]
+    t = {"catalog_item_id": target["catalog_item_id"], "wear": target["wear"], "stattrak": target["stattrak"]}
+    q = g.upgrade_quote(1, [stake["id"]], 0, t)
+    with pytest.raises(GameError) as e:
+        g.upgrade(1, [stake["id"]], 0, t, quote_chance_pct=q["chance_pct"] + 5)
+    assert e.value.code == "CONFIG_CHANGED"
+    res = g.upgrade(1, [stake["id"]], 0, t, quote_chance_pct=q["chance_pct"])
+    assert res["chance_pct"] <= 80
     assert res["success"] == ("item" in res)
+    if not res["success"]:
+        assert res["parts_cents"] == stake["price_cents"] * 10 // 100 and res["next_bonus_pct"] == 3
 
 
-def test_wheel_once_per_day(g):
-    g.wheel(1)
-    with pytest.raises(GameError):
-        g.wheel(1)
+# --- рынок и обмены ------------------------------------------------------------------------------------
 
 
-def test_task_claim(g):
-    with pytest.raises(GameError):
-        g.claim_task(1, "spin3")
-    for _ in range(3):
-        g.spin(1, g.catalog.free_case_id, 1, free=True)
-    res = g.claim_task(1, "spin3")
-    assert res["coins"] > 0
+def two_players(g):
+    g.ensure_user(2, "Bob")
+    rich(g, 1)
+    rich(g, 2)
+    g.clock_obj.t += 2 * DAY
+    item = g.spin(1, case_id=cheap_case(g), count=1, confirmed=True)["drops"][0]["items"][0]
+    return item
 
 
-def test_referral_reward_after_10_spins(g):
+def test_market_band_fee_hold(g):
+    item = two_players(g)
+    with pytest.raises(GameError) as e:
+        g.create_lot(1, item["id"], item["price_cents"] * 2)
+    assert e.value.code == "PRICE_OUT_OF_BAND"
+    lot = g.create_lot(1, item["id"], item["price_cents"])
+    with pytest.raises(GameError) as e:
+        g.sell(1, [item["id"]])
+    assert e.value.code == "ITEM_BUSY"
+    b1, b2 = balance(g, 1), balance(g, 2)
+    res = g.buy_lot(2, lot["id"])
+    fee = item["price_cents"] * 10 // 100
+    assert res["fee_cents"] == fee
+    assert balance(g, 1) == b1 + item["price_cents"] - fee and balance(g, 2) == b2 - item["price_cents"]
+    with pytest.raises(GameError) as e:
+        g.create_lot(2, item["id"], item["price_cents"])
+    assert e.value.code == "ITEM_BUSY"  # удержание 24 ч
+    assert ledger_sum(g, 1) == balance(g, 1) and ledger_sum(g, 2) == balance(g, 2)
+
+
+def test_new_account_cannot_trade(g):
+    g.ensure_user(2, "Bob")
+    item = g.spin(2, case_id=cheap_case(g), source="free")["drops"][0]["items"][0]
+    with pytest.raises(GameError) as e:
+        g.create_lot(2, item["id"], item["price_cents"])
+    assert e.value.code == "NOT_ALLOWED_YET"
+
+
+def test_item_not_on_market_and_trade_at_once(g):
+    item = two_players(g)
+    g.create_lot(1, item["id"], item["price_cents"])
+    with pytest.raises(GameError) as e:
+        g.propose_trade(1, 2, [item["id"]], [])
+    assert e.value.code == "ITEM_BUSY"
+
+
+def test_race_market_vs_trade(g):
+    item = two_players(g)
+    results = []
+    barrier = threading.Barrier(2)
+
+    def lot():
+        barrier.wait()
+        try:
+            g.create_lot(1, item["id"], item["price_cents"])
+            results.append("lot")
+        except GameError:
+            pass
+
+    def trade():
+        barrier.wait()
+        try:
+            g.propose_trade(1, 2, [item["id"]], [])
+            results.append("trade")
+        except GameError:
+            pass
+
+    threads = [threading.Thread(target=lot), threading.Thread(target=trade)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert len(results) == 1
+    state = g.conn.execute("SELECT state FROM items WHERE id=?", (item["id"],)).fetchone()[0]
+    assert state in ("market", "trade")
+
+
+def test_buy_order_fills_from_lot(g):
+    item = two_players(g)
+    b2 = balance(g, 2)
+    g.create_order(2, item["catalog_id"], item["wear"], item["stattrak"], item["price_cents"])
+    assert balance(g, 2) == b2 - item["price_cents"]
+    g.create_lot(1, item["id"], item["price_cents"] * 9 // 10)
+    order = g.buy_orders(2)["orders"][0]
+    assert order["status"] == "filled"
+    assert balance(g, 2) == b2 - item["price_cents"] * 9 // 10
+    assert ledger_sum(g, 2) == balance(g, 2)
+
+
+def test_trade_accept(g):
+    item = two_players(g)
+    other = g.spin(2, case_id=cheap_case(g), count=1, confirmed=True)["drops"][0]["items"][0]
+    if abs(item["price_cents"] - other["price_cents"]) / max(item["price_cents"], other["price_cents"]) > 0.5:
+        pytest.skip("случайно большая разница цен")
+    t = g.propose_trade(1, 2, [item["id"]], [other["id"]])
+    g.answer_trade(2, t["id"], "accept")
+    assert g.conn.execute("SELECT owner FROM items WHERE id=?", (item["id"],)).fetchone()[0] == 2
+    assert g.conn.execute("SELECT owner FROM items WHERE id=?", (other["id"],)).fetchone()[0] == 1
+
+
+# --- удержание ----------------------------------------------------------------------------------------
+
+
+def test_referral_after_10_spins(g):
     g.ensure_user(3, "Friend", referrer=1)
-    g.conn.execute("UPDATE users SET balance=100000000 WHERE id=3")
-    g.spin(3, g.catalog.case_list[0]["id"], 10)
-    assert g.state(1)["user"]["bonus_spins"] == 3
+    rich(g, 3)
+    assert g.me(3)["bonus_spins"] == 3
+    g.spin(3, case_id=cheap_case(g), count=5, confirmed=True)
+    assert g.me(1)["bonus_spins"] == 0
+    g.spin(3, case_id=cheap_case(g), count=5, confirmed=True)
+    assert g.me(1)["bonus_spins"] == 3
 
 
-def test_fair_rotate_reveals_seed(g):
-    import hashlib
+def test_wheel_daily_once_and_weekly_locked(g):
+    g.wheel(1, "daily")
+    with pytest.raises(GameError):
+        g.wheel(1, "daily")
+    with pytest.raises(GameError) as e:
+        g.wheel(1, "weekly")
+    assert e.value.code == "NOT_ALLOWED_YET"
 
-    before = g.state(1)["user"]["fair"]
-    res = g.rotate_seed(1, "my-seed")
-    assert hashlib.sha256(res["revealed"]["server_seed"].encode()).hexdigest() == before["server_seed_hash"]
-    assert res["next"]["client_seed"] == "my-seed"
+
+def test_quests_tickets_and_raffle(g):
+    g.spin(1, case_id=cheap_case(g), source="free", count=3)
+    g.claim_quest(1, "spin3")
+    assert g.raffle_today(1)["my_tickets"] == 1
+    day = g.today()
+    res = g.draw_raffle(day)
+    assert res["winners"][0]["user_id"] == 1
+    assert g.draw_raffle(day) is None
+    from skinsbot import game as gm
+
+    assert gm.seed_hash(res["seed"]) == res["seed_hash"]
+
+
+def test_duel(g):
+    g.ensure_user(2, "Bob")
+    rich(g, 1)
+    rich(g, 2)
+    a = [d["items"][0]["id"] for d in g.spin(1, case_id=cheap_case(g), count=3, confirmed=True)["drops"]]
+    b = [d["items"][0]["id"] for d in g.spin(2, case_id=cheap_case(g), count=3, confirmed=True)["drops"]]
+    d = g.create_duel(1, a)
+    with pytest.raises(GameError):
+        g.sell(1, [a[0]])
+    res = g.join_duel(2, d["id"], b)
+    assert res["winner"] in (1, 2)
+    assert g.conn.execute("SELECT state FROM items WHERE id=?", (a[0],)).fetchone()[0] == "free"
+
+
+# --- Stars ----------------------------------------------------------------------------------------------
+
+
+def test_payments_idempotent_and_month_cap(g):
+    rules.CFG["stars"]["shop_enabled"] = True
+    try:
+        inv = g.create_invoice(1, "attempts_20")
+        assert g.precheckout(inv["payload"], 1, 89) is None
+        assert g.grant_payment(inv["payload"], "charge-1", 89)["granted"]
+        assert not g.grant_payment(inv["payload"], "charge-1", 89)["granted"]
+        assert g.me(1)["attempts"] == 20
+        for n, code in enumerate(("vip_30", "luck_2", "slots_100")):
+            p = g.create_invoice(1, code)
+            assert g.grant_payment(p["payload"], f"c{n}", p["stars"])["granted"]
+        assert g.shop(1)["month_spent"] == 89 + 249 + 49 + 99
+        assert g.me(1)["luck"] == {"mult": 2.0, "spins_left": 10}
+        with pytest.raises(GameError) as e:
+            g.create_invoice(1, "slots_100")  # 486 + 99 > 500
+        assert e.value.code == "STARS_MONTH_CAP"
+    finally:
+        rules.CFG["stars"]["shop_enabled"] = False
+
+
+def test_attempt_spin(g):
+    g.conn.execute("UPDATE players SET paid_attempts=2 WHERE user_id=1")  # не деньги, ledger не нужен
+    g.spin(1, case_id=cheap_case(g), source="attempt", count=1)
+    assert g.me(1)["attempts"] == 1
+
+
+# --- админка и журналы -----------------------------------------------------------------------------------
+
+
+def test_append_only_journals(g):
+    import sqlite3
+
+    g.spin(1, case_id=cheap_case(g), source="free")
+    for sql in ("UPDATE ledger SET delta=0", "DELETE FROM ledger", "DELETE FROM item_events"):
+        with pytest.raises(sqlite3.DatabaseError):
+            g.conn.execute(sql)
+
+
+def test_rollback_keeps_history(g):
+    item = g.spin(1, case_id=cheap_case(g), source="free")["drops"][0]["items"][0]
+    sale = g.sell(1, [item["id"]])
+    events_before = g.conn.execute("SELECT COUNT(*) FROM item_events WHERE item_id=?", (item["id"],)).fetchone()[0]
+    g.rollback_sale(99, sale["sale_id"])
+    events_after = g.conn.execute("SELECT COUNT(*) FROM item_events WHERE item_id=?", (item["id"],)).fetchone()[0]
+    assert events_after == events_before + 1
+    assert g.conn.execute("SELECT COUNT(*) FROM admin_audit").fetchone()[0] == 1
+    assert ledger_sum(g, 1) == balance(g, 1)
+
+
+def test_admin_config_validation(g):
+    import copy
+
+    bad = copy.deepcopy(rules.CFG)
+    bad["case_odds"]["rare"] = 70
+    with pytest.raises(GameError):
+        g.save_config(1, bad)
+    ok = copy.deepcopy(rules.CFG)
+    assert g.save_config(1, ok)["version"]
+
+
+def test_piggy_tax(g):
+    rich(g, 1, 6_000_000)
+    g.piggy_tax()
+    assert balance(g, 1) == 6_000_000 - 10_000
+    g.piggy_tax()
+    assert balance(g, 1) == 6_000_000 - 10_000
+
+
+def test_notifications_limit_and_quiet(g):
+    for n in range(4):
+        with g.tx():
+            g._notify(1, "test", f"n{n}")
+    pending = g.pending_notifications()
+    assert len(pending) == 2
+    for p in pending:
+        g.mark_sent(p["id"], True)
+    assert g.pending_notifications() == []
+    g.clock_obj.t += 11 * 3600  # 22:00 МСК — тишина
+    with g.tx():
+        g._notify(1, "test", "ночь")
+    assert g.pending_notifications() == []
+
+
+def test_fair_rolls_recomputable(g):
+    from skinsbot import game as gm
+
+    g.spin(1, case_id=cheap_case(g), source="free")
+    fair = g.fair(1)
+    roll = fair["rolls"][0]
+    assert roll["server_seed"] is None
+    revealed = g.rotate_seed(1, "my-seed")["revealed"]
+    u0 = gm.roll(revealed["server_seed"], roll["client_seed"], roll["nonce"], 0)
+    assert 0 <= u0 < 1
+    assert gm.seed_hash(revealed["server_seed"]) == roll["seed_hash"]
+    assert json.loads(json.dumps(g.fair(1)))["rolls"][0]["server_seed"] == revealed["server_seed"]
