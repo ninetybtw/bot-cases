@@ -35,6 +35,9 @@ class Core:
         self.clock = clock
         self._mutex = threading.RLock()
         self.on_notify = None  # функция отправки уведомлений, ставит бот
+        row = self.conn.execute("SELECT body FROM config_versions WHERE active=1").fetchone()
+        if row:  # версия, включённая в админке, главнее файла config/skins.json
+            rules.activate(json.loads(row["body"]))
 
     # --- время -------------------------------------------------------------
 

@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Админка · Кейсы CS2</title>
+<style>
+  :root { --bg: #111317; --surface: #1b1e24; --line: #2e333d; --fg: #e9ecf1; --muted: #8b93a1; --accent: #e8336e; --ok: #4fd18b; --bad: #ff5a5a; color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  header b { margin-right: auto; font-size: 16px; }
+  nav { display: flex; flex-wrap: wrap; gap: 4px; padding: 10px 16px; }
+  nav button, button { padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); cursor: pointer; font: inherit; }
+  nav button.on { border-color: var(--accent); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  input, textarea { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--fg); font: inherit; }
+  textarea { width: 100%; min-height: 360px; font: 12px/1.4 ui-monospace, Menlo, monospace; }
+  main { padding: 0 16px 40px; display: flex; flex-direction: column; gap: 12px; }
+  .box { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { padding: 6px 10px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .alert { padding: 10px 12px; border-radius: 8px; border: 1px solid var(--bad); color: var(--bad); }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .muted { color: var(--muted); }
+  pre { white-space: pre-wrap; word-break: break-all; font: 12px/1.4 ui-monospace, Menlo, monospace; background: var(--surface); padding: 10px; border-radius: 8px; }
+</style>
+</head>
+<body>
+<header><b>Админка «Кейсы CS2»</b>
+  <label>Код 2FA <input id="code" inputmode="numeric" size="7" placeholder="000000"></label>
+</header>
+<nav id="nav">
+  <button data-v="economy" class="on">Экономика</button><button data-v="config">Конфиг</button><button data-v="item">Предмет</button>
+  <button data-v="user">Игрок</button><button data-v="fraud">Антифрод</button><button data-v="payments">Платежи Stars</button>
+</nav>
+<main id="view"></main>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script>
+(function () {
+  const $ = (s) => document.querySelector(s);
+  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const rub = (c) => (c / 100).toLocaleString("ru-RU", { maximumFractionDigits: 0 }) + " ₽";
+  const dt = (ts) => ts ? new Date(ts * 1000).toLocaleString("ru-RU") : "—";
+  async function call(method, path, body) {
+    const h = { "Content-Type": "application/json", "X-Admin-Code": $("#code").value.trim(), "Idempotency-Key": crypto.randomUUID() };
+    const tg = window.Telegram && Telegram.WebApp;
+    if (tg && tg.initData) h.Authorization = "tma " + tg.initData; else h["X-Dev-User"] = localStorage.getItem("devUser") || "1";
+    const r = await fetch("/v1/admin" + path, { method, headers: h, body: body ? JSON.stringify(body) : undefined });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error ? d.error.message : "Ошибка");
+    return d;
+  }
+  const view = $("#view");
+  const fail = (e) => (view.insertAdjacentHTML("afterbegin", `<p class="alert">${esc(e.message)}</p>`));
+
+  const pages = {
+    async economy() {
+      const d = await call("GET", "/economy?days=14");
+      view.innerHTML = `${d.alert ? '<p class="alert">Приток больше слива на 10% две недели подряд. Рычаги: цены кейсов, доля продажи системе, комиссия рынка, налог на копилку. Шансы — последний рычаг.</p>' : ""}
+        <p class="muted">Курс ЦБ ${d.usd_rub} ₽/$ · самый дешёвый кейс ${rub(d.unit_cents)} · цель: бесплатный игрок набирает не больше чем на 5 платных спинов в сутки.</p>
+        <div class="box"><table><tr><th>День</th><th>Приток</th><th>Слив</th><th>Комиссия рынка</th><th>Активных</th><th>Приток без продаж на игрока</th><th>Платных спинов</th></tr>
+        ${d.days.map((x) => `<tr><td>${x.day}</td><td>${rub(x.faucet)}</td><td>${rub(x.sink)}</td><td>${rub(x.market_fee)}</td><td>${x.active}</td><td>${rub(x.faucet_per_active_cents)}</td><td class="${x.paid_spins_per_active > 5 ? "bad" : "ok"}">${x.paid_spins_per_active}</td></tr>`).join("")}</table></div>
+        <h3>Возврат по шкалам</h3><div class="box"><table><tr><th>Кейс или уровень</th><th>Возврат</th></tr>
+        ${Object.entries(d.rtp).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="${v >= 0.78 && v <= 0.82 ? "ok" : "bad"}">${(v * 100).toFixed(1)}%</td></tr>`).join("")}</table></div>`;
+    },
+    async config() {
+      const d = await call("GET", "/configs");
+      view.innerHTML = `<p class="muted">Активная версия: ${esc(d.active)}. Новая версия проверяется: суммы шансов 100%, возврат с гарантиями 78–82%, курсы валют. Об изменении шкал объявляем в канале за 24 часа.</p>
+        <textarea id="cfg">${esc(JSON.stringify(d.config, null, 2))}</textarea>
+        <div class="row"><button id="check">Проверить и сравнить</button><button id="save">Сохранить версию</button><button class="primary" id="act">Сохранить и включить</button></div>
+        <pre id="out"></pre>
+        <div class="box"><table><tr><th>Версия</th><th>Активна</th><th>Кто</th><th>Когда</th></tr>${d.versions.map((v) => `<tr><td>${esc(v.version)}</td><td>${v.active ? "да" : ""}</td><td>${v.created_by || ""}</td><td>${dt(v.created_at)}</td></tr>`).join("")}</table></div>`;
+      const body = () => JSON.parse($("#cfg").value);
+      $("#check").onclick = async () => { try { const r = await call("POST", "/configs/check", body()); $("#out").textContent = (r.errors.length ? "ОШИБКИ:\n" + r.errors.join("\n") + "\n\n" : "Проверки пройдены.\n\n") + Object.entries(r.changed).map(([k, [a, b]]) => `${k}: ${JSON.stringify(a)} → ${JSON.stringify(b)}`).join("\n"); } catch (e) { $("#out").textContent = e.message; } };
+      $("#save").onclick = async () => { try { $("#out").textContent = JSON.stringify(await call("POST", "/configs", { config: body() })); } catch (e) { $("#out").textContent = e.message; } };
+      $("#act").onclick = async () => { if (!confirm("Включить эту версию для всех игроков?")) return; try { $("#out").textContent = JSON.stringify(await call("POST", "/configs", { config: body(), activate: true })); } catch (e) { $("#out").textContent = e.message; } };
+    },
+    async item() {
+      view.innerHTML = `<div class="row"><input id="iid" placeholder="ID предмета"><button id="find">Найти</button></div><div id="res"></div>`;
+      $("#find").onclick = async () => {
+        try {
+          const d = await call("GET", `/items/${$("#iid").value}`);
+          const it = d.item;
+          $("#res").innerHTML = `<h3>${esc(it.name)} ${esc(it.wear || "")} ${it.stattrak ? "ST" : ""} · ${rub(it.price_cents)}</h3>
+            <p>Владелец ${it.owner || "—"} · состояние ${esc(it.state)} · ${it.frozen ? '<b class="bad">заморожен</b>' : "не заморожен"} · откуда ${esc(it.origin)}</p>
+            <div class="row"><button id="fr">${it.frozen ? "Разморозить" : "Заморозить"}</button></div>
+            ${d.drop ? `<pre>Дроп #${d.drop.id}: зерно ${esc(d.drop.seed_hash)}, client ${esc(d.drop.client_seed)}, nonce ${d.drop.nonce}, конфиг ${esc(d.drop.config_version)}, гарантия ${esc(d.drop.pity_applied || "—")}</pre>` : ""}
+            <div class="box"><table><tr><th>Когда</th><th>Событие</th><th>Кто</th><th>Данные</th></tr>${d.events.map((e) => `<tr><td>${dt(e.ts)}</td><td>${esc(e.kind)}</td><td>${e.actor || ""}</td><td>${esc(e.data)}</td></tr>`).join("")}</table></div>`;
+          $("#fr").onclick = async () => { await call("POST", `/items/${it.id}/${it.frozen ? "unfreeze" : "freeze"}`); $("#find").click(); };
+        } catch (e) { fail(e); }
+      };
+    },
+    async user() {
+      view.innerHTML = `<div class="row"><input id="uid" placeholder="Telegram ID"><button id="find">Найти</button></div><div id="res"></div>`;
+      $("#find").onclick = async () => {
+        try {
+          const d = await call("GET", `/users/${$("#uid").value}`);
+          const u = d.user, p = d.player;
+          $("#res").innerHTML = `<h3>${esc(u.name)} · ${u.id} ${u.is_banned ? '<span class="bad">забанен</span>' : ""}</h3>
+            <p>Баланс ${rub(p.balance)} · уровень ${p.level} · спинов ${p.total_spins} · страна ${esc(u.country)} · VIP до ${dt(p.vip_until)}</p>
+            <div class="row"><input id="reason" placeholder="Причина"><button id="ban">${u.is_banned ? "Разбанить" : "Забанить"}</button></div>
+            <h3>Продажи системе</h3><div class="box"><table><tr><th>#</th><th>Когда</th><th>Сумма</th><th>Предметы</th><th></th></tr>
+            ${d.sales.map((s) => `<tr><td>${s.id}</td><td>${dt(s.created_at)}</td><td>${rub(s.total)}</td><td>${esc(s.item_ids)}</td><td>${s.undone_at ? "отменена" : `<button data-rb="${s.id}">Откатить</button>`}</td></tr>`).join("")}</table></div>
+            <h3>Журнал денег</h3><div class="box"><table><tr><th>Когда</th><th>Причина</th><th>Изменение</th><th>Баланс после</th></tr>
+            ${d.ledger.map((l) => `<tr><td>${dt(l.ts)}</td><td>${esc(l.reason)}</td><td>${rub(l.delta)}</td><td>${rub(l.balance_after)}</td></tr>`).join("")}</table></div>`;
+          $("#ban").onclick = async () => { await call("POST", `/users/${u.id}/${u.is_banned ? "unban" : "ban"}`, { reason: $("#reason").value }); $("#find").click(); };
+          $("#res").querySelectorAll("[data-rb]").forEach((b) => (b.onclick = async () => { if (confirm("Откатить продажу? Монеты спишутся, предметы вернутся.")) { await call("POST", `/sales/${b.dataset.rb}/rollback`); $("#find").click(); } }));
+        } catch (e) { fail(e); }
+      };
+    },
+    async fraud() {
+      const d = await call("GET", "/fraud");
+      view.innerHTML = d.flags.length ? `<div class="box"><table><tr><th>#</th><th>Тип</th><th>Игроки</th><th>Предметы</th><th>Данные</th><th>Когда</th><th></th></tr>
+        ${d.flags.map((f) => `<tr><td>${f.id}</td><td>${esc(f.kind)}</td><td>${esc(f.user_ids.join(", "))}</td><td>${esc(f.item_ids.join(", "))}</td><td>${esc(JSON.stringify(f.data))}</td><td>${dt(f.created_at)}</td><td><button data-r="${f.id}">Разобрано</button></td></tr>`).join("")}</table></div>`
+        : '<p class="muted">Очередь пуста.</p>';
+      view.querySelectorAll("[data-r]").forEach((b) => (b.onclick = async () => { await call("POST", `/fraud/${b.dataset.r}/resolve`); pages.fraud(); }));
+    },
+    async payments() {
+      const d = await call("GET", "/payments");
+      view.innerHTML = `<p class="muted">Возврат снимает неиспользованные попытки и удачу и вызывает refundStarPayment. Использованное не возвращается.</p>
+        <div class="box"><table><tr><th>#</th><th>Игрок</th><th>Товар</th><th>⭐</th><th>Статус</th><th>Когда</th><th></th></tr>
+        ${d.payments.map((p) => `<tr><td>${p.id}</td><td>${p.user_id}</td><td>${esc(p.product)}</td><td>${p.stars}</td><td>${esc(p.status)}</td><td>${dt(p.created_at)}</td><td>${p.status === "granted" ? `<button data-rf="${p.id}">Вернуть</button>` : ""}</td></tr>`).join("")}</table></div>`;
+      view.querySelectorAll("[data-rf]").forEach((b) => (b.onclick = async () => { if (!confirm("Вернуть звёзды?")) return; try { await call("POST", `/refunds/${b.dataset.rf}`); pages.payments(); } catch (e) { fail(e); } }));
+    },
+  };
+  $("#nav").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-v]");
+    if (!b) return;
+    document.querySelectorAll("#nav button").forEach((x) => x.classList.toggle("on", x === b));
+    view.innerHTML = '<p class="muted">Загрузка…</p>';
+    pages[b.dataset.v]().catch(fail);
+  });
+  pages.economy().catch(fail);
+})();
+</script>
+</body>
+</html>

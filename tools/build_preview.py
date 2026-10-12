@@ -58,6 +58,8 @@ def main() -> None:
         it["image"] = data.get(it.get("image"), "")
     for c in catalog["cases"]:
         c["image"] = data.get(c.get("image"), "")
+    catalog.pop("price_history", None)
+    config = json.loads((ROOT / "config" / "skins.json").read_text(encoding="utf-8"))
 
     app = DIST / "app"
     if DIST.exists():
@@ -66,6 +68,7 @@ def main() -> None:
     for name in ("style.css", "api.js", "app.js", "mock.js"):
         shutil.copy(WEBAPP / name, app / name)
     (app / "demo-data.js").write_text(
+        "window.DEMO_CONFIG=" + json.dumps(config, ensure_ascii=False, separators=(",", ":")) + ";\n"
         "window.DEMO_CATALOG=" + json.dumps(catalog, ensure_ascii=False, separators=(",", ":")) + ";", encoding="utf-8"
     )
     html = (WEBAPP / "index.html").read_text(encoding="utf-8")

@@ -398,9 +398,13 @@ def test_buy_order_fills_from_lot(g):
 
 def test_trade_accept(g):
     item = two_players(g)
-    other = g.spin(2, case_id=cheap_case(g), count=1, confirmed=True)["drops"][0]["items"][0]
+    drops = g.spin(2, case_id=cheap_case(g), count=10, confirmed=True)["drops"]
+    other = min((d["items"][0] for d in drops), key=lambda i: abs(i["price_cents"] - item["price_cents"]))
     if abs(item["price_cents"] - other["price_cents"]) / max(item["price_cents"], other["price_cents"]) > 0.5:
-        pytest.skip("случайно большая разница цен")
+        with pytest.raises(GameError) as e:
+            g.propose_trade(1, 2, [item["id"]], [other["id"]])
+        assert e.value.code == "PRICE_OUT_OF_BAND"
+        return
     t = g.propose_trade(1, 2, [item["id"]], [other["id"]])
     g.answer_trade(2, t["id"], "accept")
     assert g.conn.execute("SELECT owner FROM items WHERE id=?", (item["id"],)).fetchone()[0] == 2
