@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Кейсы CS2</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fira+Sans+Extra+Condensed:ital,wght@0,600;0,800;1,800&family=Golos+Text:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <header class="top">
+    <div class="brand">КЕЙСЫ<span>CS2</span></div>
+    <button class="balance" id="balance" type="button" aria-label="Баланс">
+      <b id="balance-value">$0.00</b><small>игр.</small>
+    </button>
+    <div class="energy" id="energy" title="Бесплатные спины">⚡ <b id="energy-value">0/3</b></div>
+  </header>
+
+  <main id="screens">
+    <!-- ИГРАТЬ -->
+    <section class="screen" id="screen-play" data-tab="play">
+      <div class="case-rail" id="case-rail" role="listbox" aria-label="Кейсы"></div>
+      <div class="case-stage">
+        <img id="case-image" alt="" width="256" height="192">
+        <div class="case-title">
+          <h1 id="case-name">Кейс</h1>
+          <button class="link" id="case-contents-btn" type="button">Что внутри</button>
+        </div>
+      </div>
+      <div class="odds" id="odds" aria-label="Шансы ступеней"></div>
+      <p class="pity" id="pity"></p>
+      <div class="spin-controls">
+        <div class="mult" role="radiogroup" aria-label="Сколько кейсов" id="mult">
+          <button type="button" data-count="1" class="on">×1</button>
+          <button type="button" data-count="5">×5</button>
+          <button type="button" data-count="10">×10</button>
+        </div>
+        <button class="btn-spin" id="spin-btn" type="button"><span>КРУТИТЬ</span><em id="spin-price">$0.00</em></button>
+        <button class="btn-free" id="free-btn" type="button" hidden>Бесплатно · <b id="free-count">0</b></button>
+        <p class="timer" id="energy-timer"></p>
+      </div>
+      <div class="day-cards">
+        <button class="day-card" id="wheel-card" type="button">
+          <span class="dc-ico">◎</span><span class="dc-t">Колесо дня</span><span class="dc-s" id="wheel-status">Доступно</span>
+        </button>
+        <button class="day-card" id="tasks-card" type="button">
+          <span class="dc-ico">✓</span><span class="dc-t">Задания</span><span class="dc-s" id="tasks-status">0/3</span>
+        </button>
+      </div>
+      <h2 class="h-sub">Лента дропов</h2>
+      <div class="feed" id="feed"></div>
+    </section>
+
+    <!-- КОЛЛЕКЦИЯ -->
+    <section class="screen" id="screen-collection" data-tab="collection" hidden>
+      <div class="col-head">
+        <div><small>Места</small><b id="col-slots">0 / 200</b></div>
+        <div><small>Стоимость</small><b id="col-value">$0.00</b></div>
+        <button class="btn-ghost" id="sell-dupes" type="button">Продать дубли</button>
+      </div>
+      <div class="chips" id="col-chips"></div>
+      <div class="col-tools">
+        <label class="search"><span class="sr">Поиск</span><input id="col-search" type="search" placeholder="Поиск: AK-47, Fade…"></label>
+        <label><span class="sr">Сортировка</span>
+          <select id="col-sort">
+            <option value="new">Новые</option>
+            <option value="price">Дорогие</option>
+            <option value="rare">Редкие</option>
+            <option value="growth">Выросли</option>
+          </select>
+        </label>
+      </div>
+      <div class="grid" id="col-grid"></div>
+      <p class="empty" id="col-empty" hidden>Пока пусто. Крутни первый кейс на вкладке «Играть».</p>
+    </section>
+
+    <!-- РЫНОК: апгрейдер, 5 в 1, рынок -->
+    <section class="screen" id="screen-market" data-tab="market" hidden>
+      <div class="seg" id="market-seg" role="tablist">
+        <button type="button" data-sub="upgrade" class="on">Апгрейдер</button>
+        <button type="button" data-sub="contract">5 в 1</button>
+        <button type="button" data-sub="lots">Рынок</button>
+      </div>
+
+      <div class="sub" id="sub-upgrade">
+        <div class="up-board">
+          <button class="up-slot" id="up-stake" type="button">
+            <small>Ставка</small><div class="up-items" id="up-stake-items"><span class="plus">+</span></div><b id="up-stake-sum">$0.00</b>
+          </button>
+          <div class="up-dial">
+            <svg viewBox="0 0 120 120" id="up-svg" aria-hidden="true">
+              <circle cx="60" cy="60" r="50" class="dial-track"/>
+              <circle cx="60" cy="60" r="50" class="dial-arc" id="up-arc" pathLength="1000" stroke-dasharray="0 1000"/>
+              <g id="up-needle"><line x1="60" y1="20" x2="60" y2="2"/></g>
+            </svg>
+            <div class="dial-val"><b id="up-chance">0%</b><small>шанс</small></div>
+          </div>
+          <button class="up-slot" id="up-target" type="button">
+            <small>Цель</small><div class="up-items" id="up-target-items"><span class="plus">?</span></div><b id="up-target-sum">—</b>
+          </button>
+        </div>
+        <p class="formula" id="up-formula">Шанс = ставка ÷ цель × 0,85</p>
+        <div class="mult up-mults" id="up-mults"></div>
+        <div class="targets" id="up-targets"></div>
+        <button class="btn-spin small" id="up-go" type="button" disabled><span>УЛУЧШИТЬ</span></button>
+        <p class="note" id="up-note"></p>
+      </div>
+
+      <div class="sub" id="sub-contract" hidden>
+        <p class="lead">Положи 5 предметов одной ступени и получи 1 предмет ступенью выше из тех же кейсов.</p>
+        <div class="chips" id="ct-chips"></div>
+        <div class="ct-slots" id="ct-slots"></div>
+        <p class="formula" id="ct-info"></p>
+        <div class="grid small" id="ct-grid"></div>
+        <button class="btn-spin small" id="ct-go" type="button" disabled><span>СОБРАТЬ 5 В 1</span></button>
+      </div>
+
+      <div class="sub" id="sub-lots" hidden>
+        <div class="soon">
+          <b>Рынок между игроками</b>
+          <p>Витрина, заявки и сделки за игровые доллары. Цена лота от 50% до 150% справочной, комиссия 10%. Открываем после запуска.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ДРУЗЬЯ -->
+    <section class="screen" id="screen-friends" data-tab="friends" hidden>
+      <div class="panel">
+        <h2>Позови друга</h2>
+        <p>Когда друг откроет 10 кейсов, вы оба получите бесплатные спины: тебе 3, другу 3 на старте.</p>
+        <div class="ref-steps" id="ref-steps"></div>
+        <button class="btn-spin small" id="invite-btn" type="button"><span>ПОЗВАТЬ ДРУГА</span></button>
+      </div>
+      <div class="soon"><b>Рейтинг друзей и дуэли коллекций</b><p>Дуэль без ставок: каждый выбирает 3 предмета, побеждает более сильная тройка. Скоро.</p></div>
+    </section>
+
+    <!-- ЕЩЁ -->
+    <section class="screen" id="screen-more" data-tab="more" hidden>
+      <div class="profile" id="profile"></div>
+      <div class="menu-list">
+        <button type="button" data-open="fair"><span>Честная игра</span><small>проверь любой спин</small></button>
+        <button type="button" data-open="odds"><span>Шансы</span><small>все ступени и износ</small></button>
+        <button type="button" data-open="settings"><span>Настройки</span><small>быстрый режим, эффекты</small></button>
+        <button type="button" data-open="terms"><span>Условия</span><small>что можно и нельзя</small></button>
+      </div>
+    </section>
+  </main>
+
+  <nav class="tabs" id="tabs">
+    <button type="button" data-tab="play" class="on"><i>▶</i>Играть</button>
+    <button type="button" data-tab="collection"><i>▦</i>Коллекция</button>
+    <button type="button" data-tab="market"><i>⇅</i>Рынок</button>
+    <button type="button" data-tab="friends"><i>☺</i>Друзья</button>
+    <button type="button" data-tab="more"><i>⋯</i>Ещё</button>
+  </nav>
+
+  <!-- Лента спина -->
+  <div class="overlay" id="reel-overlay" hidden>
+    <div class="reels" id="reels"></div>
+    <button class="btn-ghost skip" id="reel-skip" type="button">Пропустить</button>
+  </div>
+
+  <!-- Нижняя шторка для карточек и диалогов -->
+  <div class="sheet-back" id="sheet-back" hidden></div>
+  <div class="sheet" id="sheet" hidden role="dialog" aria-modal="true"><div class="sheet-body" id="sheet-body"></div></div>
+
+  <div class="toast" id="toast" hidden></div>
+</div>
+<script src="api.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
