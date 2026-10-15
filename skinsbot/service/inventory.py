@@ -69,10 +69,10 @@ class Inventory:
 
     def _sell(self, user_id: int, item_ids: list[int], confirmed: bool, reason: str = "sell_system") -> dict:
         rows = self._owned(user_id, item_ids)
-        if len(rows) > 1 and any(rules.at_least(r["tier"], "legendary") for r in rows):
-            raise GameError("BAD_REQUEST", "Легендарные и выше продаются только по одному.")
-        if len(rows) == 1 and rules.at_least(rows[0]["tier"], "legendary") and not confirmed:
-            raise GameError("CONFIRM_REQUIRED", "Подтверди продажу.", pause_s=3 if rules.at_least(rows[0]["tier"], "mythic") else 0)
+        if any(rules.at_least(r["tier"], "legendary") for r in rows) and not confirmed:
+            total = sum(self.item_view(r)["sell_cents"] for r in rows)
+            raise GameError("CONFIRM_REQUIRED", f"Продать за {self.money(user_id, total)}? Отменить можно 10 минут.",
+                            total_cents=total)
         total = 0
         states = {}
         for r in rows:
@@ -121,7 +121,7 @@ class Inventory:
         return self.idempotent(user_id, idem_key, "undo", run)
 
     def duplicates(self, user_id: int) -> list[int]:
-        """«Продать дубли»: остаётся лучший экземпляр каждого вида; Легендарный+ и под замком не продаются."""
+        """«Продать дубли»: остаётся лучший экземпляр каждого вида; под замком не продаются."""
         rows = self.conn.execute(
             "SELECT * FROM items WHERE owner=? AND state='free' AND locked=0 AND frozen=0", (user_id,)).fetchall()
         groups: dict[tuple, list] = {}
@@ -130,7 +130,7 @@ class Inventory:
         out = []
         for g in groups.values():
             g.sort(key=lambda r: (r["float_value"] if r["float_value"] is not None else 1, -r["id"]))
-            out += [r["id"] for r in g[1:] if not rules.at_least(r["tier"], "legendary")]
+            out += [r["id"] for r in g[1:]]
         return out
 
     def duplicates_quote(self, user_id: int) -> dict:
@@ -141,9 +141,31 @@ class Inventory:
     def sell_cheaper(self, user_id: int, max_cents: int) -> dict:
         rows = self.conn.execute(
             "SELECT * FROM items WHERE owner=? AND state='free' AND locked=0 AND frozen=0", (user_id,)).fetchall()
-        ids = [r["id"] for r in rows if self.item_view(r)["price_cents"] < max_cents and not rules.at_least(r["tier"], "legendary")]
+        ids = [r["id"] for r in rows if self.item_view(r)["price_cents"] < max_cents]
         total = sum(self.item_view(self._item(i))["sell_cents"] for i in ids)
         return {"item_ids": ids, "total_cents": total}
+
+    def sell_group_quote(self, user_id: int, group: str) -> dict:
+        """Быстрая продажа: все скины или одна редкость (sell_quick.groups). Переполнение продаётся;
+        под замком, на рынке, в обмене, в дуэли, на удержании и замороженные — нет."""
+        groups = {g["id"] for g in rules.CFG["sell_quick"]["groups"]}
+        if group not in groups:
+            raise GameError("BAD_REQUEST", "Такой группы нет.")
+        now = self.clock()
+        rows = self.conn.execute(
+            "SELECT * FROM items WHERE owner=? AND state='free' AND locked=0 AND frozen=0 ORDER BY id", (user_id,)).fetchall()
+        rows = [r for r in rows if (group == "all" or r["tier"] == group) and not (r["hold_until"] and r["hold_until"] > now)]
+        return {"group": group, "item_ids": [r["id"] for r in rows], "count": len(rows),
+                "total_cents": sum(self.item_view(r)["sell_cents"] for r in rows),
+                "confirm_required": any(rules.at_least(r["tier"], "legendary") for r in rows)}
+
+    def sell_groups(self, user_id: int) -> list[dict]:
+        """Кнопки быстрой продажи с числом предметов и суммой."""
+        out = []
+        for g in rules.CFG["sell_quick"]["groups"]:
+            q = self.sell_group_quote(user_id, g["id"])
+            out.append({"id": g["id"], "label": g["label"], "count": q["count"], "total_cents": q["total_cents"]})
+        return out
 
     # --- замок и витрина --------------------------------------------------------------
 

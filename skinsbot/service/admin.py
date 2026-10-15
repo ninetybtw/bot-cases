@@ -47,8 +47,10 @@ class Admin:
             d["faucet_per_active_cents"] = round(free / active) if active else 0
             d["paid_spins_per_active"] = round(d["faucet_per_active_cents"] / self.catalog.unit_cents, 2)
         alert = len(out) >= 14 and all(d["faucet"] > d["sink"] * 1.1 for d in out[-14:])
+        banners = {r["banner_id"]: r["n"] for r in self.conn.execute(
+            "SELECT banner_id, COUNT(*) AS n FROM banner_clicks WHERE ts>=? GROUP BY banner_id", (since,))}
         return {"days": out, "alert": alert, "rtp": self.catalog.rtps(), "usd_rub": self.catalog.usd_rub,
-                "unit_cents": self.catalog.unit_cents}
+                "unit_cents": self.catalog.unit_cents, "banner_clicks": banners}
 
     # --- конфиг -----------------------------------------------------------------------
 
@@ -57,7 +59,7 @@ class Admin:
         return {"active": rules.VERSION, "versions": [dict(r) for r in rows], "config": rules.CFG}
 
     def check_config(self, cfg: dict) -> list[str]:
-        return odds.validate_config(cfg, self.catalog.tier_values(), self.catalog.rtps())
+        return odds.validate_config(cfg, self.catalog)
 
     def save_config(self, admin_id: int, cfg: dict, activate: bool = False) -> dict:
         errors = self.check_config(cfg)

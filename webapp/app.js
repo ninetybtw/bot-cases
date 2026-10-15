@@ -4,7 +4,7 @@
 
   const $ = (id) => document.getElementById(id);
   const TIER_ORDER = ["common", "uncommon", "rare", "epic", "legendary", "mythic", "secret", "divine", "exclusive"];
-  const CASE_TIERS = ["rare", "epic", "legendary", "mythic", "secret"];
+  const DROP_TIERS = ["common", "uncommon", "rare", "epic", "legendary", "mythic", "secret"];
   const WEAR = { FN: "Factory New", MW: "Minimal Wear", FT: "Field-Tested", WW: "Well-Worn", BS: "Battle-Scarred" };
   const rank = (t) => TIER_ORDER.indexOf(t);
   const api = window.Api;
@@ -15,17 +15,16 @@
   let busy = false;
   const settings = loadSettings();
   const ui = {
-    tab: "play", level: settings.level || "common", caseId: null, count: 1,
-    colFilter: "all", colSort: "new", colSearch: "",
-    market: "lots", lotsView: "all", lotsTier: null,
-    friends: "invite", board: "capital", scope: "friends",
-    up: { items: [], coins: 0, mult: 2, target: null, targets: [], spinning: false },
-    ct: { tier: "rare", items: [] },
+    tab: "cases", cat: "all", caseId: null, count: 1,
+    colFilter: "all", colSort: "new", colSearch: "", select: false, selected: new Set(),
+    up: { items: [], coins: 0, mult: 2, target: null, targets: [], side: "stake", spinning: false },
+    ct: { items: [], tier: "all" },
+    page: null, market: "all", lotsTier: null, board: "capital", scope: "friends",
   };
 
   // ---------- утилиты ----------
   function loadSettings() {
-    const d = { fast: false, nofx: false, noUpgrader: false, level: "common" };
+    const d = { fast: false, nofx: false, noUpgrader: false };
     try { return Object.assign(d, JSON.parse(localStorage.getItem("settings") || "{}")); } catch (e) { return d; }
   }
   function saveSettings() { try { localStorage.setItem("settings", JSON.stringify(settings)); } catch (e) { /* без хранилища */ } }
@@ -35,15 +34,16 @@
     const d = cur.decimals;
     const fixed = d ? v.toFixed(d) : String(Math.round(v));
     const [a, b] = fixed.split(".");
-    const text = a.replace(/\B(?=(\d{3})+(?!\d))/g, " ") + (b ? "," + b : "");
-    return opts.bare ? text : text + " " + cur.symbol;
+    const text = a.replace(/\B(?=(\d{3})+(?!\d))/g, " ") + (b ? "," + b : "");
+    return opts.bare ? text : text + " " + cur.symbol;
   }
   function pct(p, digits) {
-    const d = digits != null ? digits : p >= 0.1 ? 1 : 2;
+    const d = digits != null ? digits : p >= 0.1 ? 1 : p >= 0.001 ? 2 : 3;
     return (p * 100).toFixed(d).replace(".", ",") + "%";
   }
+  const num = (x) => String(x).replace(".", ",");
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])); }
-  function tc(tier) { return `--tc: var(--t-${tier})`; }
+  function tc(t) { return `--tc: var(--t-${t})`; }
   function tier(t) { return (C && C.tiers[t]) || { name: t, icon: "" }; }
   function haptic(kind) {
     const t = api.tg();
@@ -66,9 +66,13 @@
   }
   const itemTitle = (it) => `${esc(it.weapon)}${it.finish ? " | " + esc(it.finish) : ""}`;
   const wearLine = (it) => [it.stattrak ? '<span class="st">ST™</span>' : "", it.wear || ""].filter(Boolean).join(" ");
-  const selectedCase = () => C.cases.find((c) => c.id === ui.caseId);
-  const selectedLevel = () => C.levels.find((l) => l.id === ui.level);
+  const caseById = (id) => C.cases.find((c) => c.id === id);
   const dayStr = (ts) => new Date(ts * 1000).toLocaleDateString("ru-RU", { day: "2-digit", month: "2-digit" });
+  const findItem = (id) => INV && INV.items.find((x) => x.id === id);
+  const usable = (i) => i.state === "free" && !i.locked && !i.frozen;
+  const sellable = (i) => usable(i) && !(i.hold_until && i.hold_until > Date.now() / 1000);
+  const toCents = (v) => Math.round(((parseFloat(String(v).replace(",", ".")) || 0) / M.currency.rate) * 100);
+  const fromCents = (c) => ((c / 100) * M.currency.rate).toFixed(M.currency.decimals);
 
   // ---------- шторка и подтверждения ----------
   let sheetClose = null;
@@ -89,25 +93,16 @@
   }
   $("sheet-back").addEventListener("click", closeSheet);
 
-  function confirmSheet({ title, text, ok, pause = 0 }) {
+  // Подтверждение без таймеров: одна кнопка «Отмена», одна — действие.
+  function confirmSheet({ title, text, ok }) {
     return new Promise((resolve) => {
       const body = openSheet(`
         <h2>${esc(title)}</h2><p>${text}</p>
         <div class="actions"><button type="button" id="cf-no">Отмена</button>
-        <button type="button" class="primary" id="cf-ok" ${pause ? "disabled" : ""}>${esc(ok)}${pause ? ` <span class="count-down">${pause}</span>` : ""}</button></div>`,
+        <button type="button" class="primary" id="cf-ok">${esc(ok)}</button></div>`,
         () => resolve(false));
-      const btn = body.querySelector("#cf-ok");
-      if (pause) {
-        let left = pause;
-        const iv = setInterval(() => {
-          left -= 1;
-          if (!document.body.contains(btn)) return clearInterval(iv);
-          if (left <= 0) { clearInterval(iv); btn.disabled = false; btn.textContent = ok; }
-          else btn.querySelector(".count-down").textContent = left;
-        }, 1000);
-      }
       body.querySelector("#cf-no").onclick = () => closeSheet();
-      btn.onclick = () => { sheetClose = null; closeSheet(); resolve(true); };
+      body.querySelector("#cf-ok").onclick = () => { sheetClose = null; closeSheet(); resolve(true); };
     });
   }
 
@@ -117,7 +112,7 @@
       return await fn(false);
     } catch (err) {
       if (err.code !== "CONFIRM_REQUIRED") throw err;
-      const ok = await confirmSheet({ title: title || "Подтвердить?", text: esc(err.message), ok: okLabel || "Подтвердить", pause: err.pause_s || 0 });
+      const ok = await confirmSheet({ title: title || "Подтвердить?", text: esc(err.message), ok: okLabel || "Подтвердить" });
       if (!ok) return null;
       return fn(true);
     }
@@ -127,10 +122,10 @@
     haptic("error");
     if (err.code === "NOT_ENOUGH_COINS") {
       const body = openSheet(`<h2>${esc(err.message.split(".")[0])}</h2>
-        <p class="lead">Монеты дают колесо дня, задания и продажа предметов.</p>
-        <div class="actions"><button type="button" id="ne-wheel">Колесо</button><button type="button" id="ne-tasks">Задания</button></div>`);
-      body.querySelector("#ne-wheel").onclick = openWheel;
-      body.querySelector("#ne-tasks").onclick = openTasks;
+        <p class="lead">Монеты дают колесо дня, задания и продажа предметов в Инвентаре.</p>
+        <div class="actions"><button type="button" id="ne-wheel">Колесо</button><button type="button" id="ne-inv">Продать скины</button></div>`);
+      body.querySelector("#ne-wheel").onclick = () => openWheel();
+      body.querySelector("#ne-inv").onclick = () => { closeSheet(); switchTab("inventory"); };
       return;
     }
     toast(err.message || "Что-то пошло не так. Попробуй ещё раз.");
@@ -146,118 +141,157 @@
 
   function renderAll() {
     renderHeader();
-    renderPlay();
-    renderCollection();
-    if (ui.tab === "market") renderMarket();
-    renderMore();
+    if (ui.tab === "cases") renderCases();
+    if (ui.tab === "upgrade") renderUpgrade();
+    if (ui.tab === "contract") renderContract();
+    if (ui.tab === "inventory") renderInventory();
+    if (ui.tab === "more" && !ui.page) renderMore();
   }
 
   function renderHeader() {
     $("balance-value").textContent = money(M.balance_cents);
     $("balance-label").textContent = M.currency.game_label || "";
-    $("energy-value").textContent = `${M.energy.now}/${M.energy.max}`;
+    $("energy-value").textContent = `${M.energy.now + M.bonus_spins}/${M.energy.max}`;
+    document.querySelector('#tabs [data-tab="upgrade"]').hidden = settings.noUpgrader;
   }
 
-  // ---------- ИГРАТЬ ----------
-  function levelCard(l) {
-    const on = l.id === ui.level;
-    if (l.id === "common") {
-      return `<button type="button" class="level-chip ${on ? "on" : ""}" data-level="common">
-        <span class="lv-name">${esc(l.name)}</span><span class="lv-what">${C.cases.length} кейсов</span>
-        <span class="lv-goal">Covert+ ${pct(C.case_odds.filter((o) => rank(o.tier) >= rank("mythic")).reduce((s, o) => s + o.p, 0), 2)}</span>
-        <b>от ${money(Math.min(...C.cases.map((c) => c.price_cents)))}</b></button>`;
-    }
-    return `<button type="button" class="level-chip ${on ? "on" : ""}" data-level="${l.id}" style="${tc(l.from)}">
-      <span class="lv-name">${esc(l.name)}</span><span class="lv-what">${esc(l.what)}</span>
-      <span class="lv-goal">${esc(l.goal.label)} ${pct(l.goal.p, 2)}</span><b>${money(l.price_cents)}</b></button>`;
-  }
-
-  function currentScale() {
-    if (ui.level === "common") return C.case_odds;
-    return selectedLevel().odds;
-  }
-  function currentPrice() {
-    return ui.level === "common" ? selectedCase().price_cents : selectedLevel().price_cents;
-  }
-
-  function renderPlay() {
-    $("level-rail").innerHTML = C.levels.map(levelCard).join("");
-    const common = ui.level === "common";
-    $("case-rail").hidden = !common;
-    if (common) {
-      $("case-rail").innerHTML = C.cases.map((c) => `
-        <button type="button" class="case-chip ${c.id === ui.caseId ? "on" : ""}" data-case="${c.id}" role="option" aria-selected="${c.id === ui.caseId}">
-          ${c.free ? '<span class="free-tag">бесплатный</span>' : ""}
-          <img src="${esc(c.image_url)}" alt="" loading="lazy"><span>${esc(c.name.replace(/ Case$/, ""))}</span><b>${money(c.price_cents)}</b>
-        </button>`).join("");
-    }
-    const c = selectedCase();
-    const lvl = selectedLevel();
-    if (common) {
-      $("stage-pic").innerHTML = `<img src="${esc(c.image_url)}" alt="">`;
-      $("case-name").textContent = c.name.replace(/ Case$/, "");
-      $("stage-sub").textContent = `Средний дроп ${money(c.ev_cents)}`;
-    } else {
-      $("stage-pic").innerHTML = `<div class="level-badge" style="${tc(lvl.from)}"><i>${tier(lvl.from).icon}</i><span>${esc(tier(lvl.from).name)}</span><small>и выше</small></div>`;
-      $("case-name").textContent = lvl.name;
-      $("stage-sub").textContent = `${lvl.what}: все скины этих ступеней из ${C.cases.length} кейсов`;
-    }
-    $("contents-btn").hidden = !common;
-    $("odds").innerHTML = currentScale().map((o) => {
-      const t = tier(o.tier);
-      return `<div class="odd" style="${tc(o.tier)}"><i>${t.icon}</i><b>${pct(o.p)}</b><small>${esc(t.name)}</small></div>`;
-    }).join("");
-    $("odds").style.gridTemplateColumns = `repeat(${currentScale().length}, 1fr)`;
-    if (common) {
-      const luck = M.luck ? ` · удача ×${String(M.luck.mult).replace(".", ",")} ещё ${M.luck.spins_left} спинов` : "";
-      $("pity").innerHTML = `Шанс Эпика и выше сейчас <b>${String(M.pity.epic_chance_pct).replace(".", ",")}%</b> · гарантия не позже 60-го кейса${luck}`;
-    } else {
-      $("pity").innerHTML = "Уровни крутятся только за монеты: без гарантий, удачи и бесплатных спинов.";
-    }
-    $("mult").innerHTML = C.spin.counts.map((n) => `<button type="button" data-count="${n}" class="${n === ui.count ? "on" : ""}">×${n}</button>`).join("");
-    $("spin-price").textContent = money(currentPrice() * ui.count);
-    const freeLeft = M.energy.now + M.bonus_spins;
-    const onFree = common && c.free;
-    $("free-btn").hidden = !(onFree && freeLeft >= ui.count);
-    $("free-count").textContent = freeLeft;
-    $("attempt-btn").hidden = !(onFree && M.attempts >= ui.count);
-    $("attempt-count").textContent = M.attempts;
-    const quests = M.today.quests_done;
-    $("tasks-status").textContent = `${quests}/3 сегодня`;
-    $("wheel-status").textContent = M.today.wheel_daily ? "Доступно" : M.today.wheel_weekly_unlocked ? "Недельное!" : "Завтра";
-    $("wheel-card").classList.toggle("ready", M.today.wheel_daily || M.today.wheel_weekly_unlocked);
-    $("raffle-status").textContent = `Билетов: ${M.today.raffle_tickets}`;
-    tickTimer();
-    loadFeed();
-  }
-
-  async function loadFeed() {
+  async function loadLive() {
     try {
       const { feed } = await api.get("/feed");
-      $("feed").innerHTML = feed.length ? feed.slice(0, 8).map((f) => `
-        <div class="feed-row" style="${tc(f.tier)}"><img src="${esc(f.image_url)}" alt="" loading="lazy">
-          <div><b>${itemTitle(f)}</b><small>${esc(f.owner_name)} · ${esc(tier(f.tier).name)}${f.wear ? " · " + f.wear : ""}</small></div>
-          <em>${money(f.price_cents)}</em></div>`).join("")
-        : '<p class="empty">Здесь появятся Эпики и всё, что выше, у всех игроков.</p>';
+      $("live").innerHTML = feed.slice(0, 14).map((f) => `
+        <div class="live-cell" style="${tc(f.tier)}" title="${esc(f.owner_name)}: ${esc(f.name)}"><img src="${esc(f.image_url)}" alt="" loading="lazy"><small>${money(f.price_cents)}</small></div>`).join("");
+      $("live").hidden = !feed.length;
     } catch (e) { /* лента не критична */ }
   }
+
+  // ---------- КЕЙСЫ ----------
+  function caseCard(c) {
+    const eff = M.luck && M.luck.cases[c.id];
+    const luck = eff && eff > 1 ? `<span class="tag luck">×${num(eff)}</span>` : "";
+    return `<button type="button" class="case-card" data-case="${c.id}" style="${tc(c.top_tier)}">
+      ${c.free ? '<span class="tag free">бесплатно</span>' : ""}${luck}
+      <img src="${esc(c.image_url)}" alt="" loading="lazy">
+      <span class="cn">${esc(c.name)}</span>
+      <b>${c.free && M.energy.now + M.bonus_spins > 0 ? "⚡ " + (M.energy.now + M.bonus_spins) : money(c.price_cents)}</b></button>`;
+  }
+
+  function renderCases() {
+    if (ui.caseId) return renderCaseView();
+    $("case-list-view").hidden = false;
+    $("case-view").hidden = true;
+    const bn = C.banners;
+    $("banners").hidden = !(bn && bn.list.length);
+    if (bn && bn.list.length) {
+      $("banners").innerHTML = bn.list.map((b) => `
+        <button type="button" class="ad" data-ad="${esc(b.id)}" style="--ad:${esc(b.color || "#2f8cff")}">
+          <span class="ad-label">${esc(bn.label)}${b.erid ? " · erid " + esc(b.erid) : ""}</span>
+          <b>${esc(b.title)}</b><small>${esc(b.text)}</small><span class="ad-go">Открыть канал →</span></button>`).join("");
+    }
+    const energy = M.energy.now + M.bonus_spins;
+    const wheel = M.today.wheel_daily ? "готово" : M.today.wheel_weekly_unlocked ? "недельное!" : "завтра";
+    $("quick").innerHTML = `
+      <button type="button" class="q ${energy ? "ready" : ""}" data-q="free"><i>⚡</i><span>${esc(caseById(C.free_case_id).name)}</span><small id="q-free">${energy ? energy + " спина" : "скоро"}</small></button>
+      <button type="button" class="q ${M.today.wheel_daily || M.today.wheel_weekly_unlocked ? "ready" : ""}" data-q="wheel"><i>◎</i><span>Колесо</span><small>${wheel}</small></button>
+      <button type="button" class="q" data-q="tasks"><i>✓</i><span>Задания</span><small>${M.today.quests_done}/3</small></button>
+      ${M.luck ? `<button type="button" class="q ready" data-q="luck"><i>🍀</i><span>Удача ×${num(M.luck.mult)}</span><small>${M.luck.spins_left} спинов</small></button>` : ""}`;
+    $("cat-chips").innerHTML = [{ id: "all", name: "Все" }].concat(C.categories).map((c) =>
+      `<button type="button" class="chip ${ui.cat === c.id ? "on" : ""}" data-cat="${c.id}">${esc(c.name)}</button>`).join("");
+    const cats = ui.cat === "all" ? C.categories : C.categories.filter((c) => c.id === ui.cat);
+    $("case-groups").innerHTML = cats.map((cat) => {
+      const list = C.cases.filter((c) => c.category === cat.id);
+      return list.length ? `<h2 class="h-sub">${esc(cat.name)}</h2><div class="case-grid">${list.map(caseCard).join("")}</div>` : "";
+    }).join("");
+    tickTimer();
+  }
+
+  function openCase(id) {
+    ui.caseId = id;
+    ui.count = 1;
+    haptic("tick");
+    renderCases();
+    $("screens").scrollTop = 0;
+  }
+
+  function renderCaseView() {
+    $("case-list-view").hidden = true;
+    const v = $("case-view");
+    v.hidden = false;
+    const c = caseById(ui.caseId);
+    const pity = M.pity && M.pity[c.id];
+    const eff = M.luck && M.luck.cases[c.id];
+    const luckOn = eff && eff > 1;
+    const energy = M.energy.now + M.bonus_spins;
+    const lines = [];
+    if (pity) lines.push(`Запрещённое и выше сейчас <b>${num(pity.epic_chance_pct)}%</b>, точно не позже чем через ${pity.epic_in}`);
+    if (luckOn) lines.push(`Удача ×${num(M.luck.mult)}${eff < M.luck.mult ? ` (здесь ×${num(eff)}: средний возврат с удачей до ${Math.round(M.luck.max_return * 100)}%)` : ""}: дорогие скины чаще, ещё ${M.luck.spins_left} спинов`);
+    else if (M.luck && !c.luck) lines.push(`Удача работает на кейсах до ${money(C.luck.max_case_cents)}`);
+    v.innerHTML = `
+      <button type="button" class="back" id="cv-back">← Все кейсы</button>
+      <div class="case-hero" style="${tc(c.top_tier)}">
+        <img src="${esc(c.image_url)}" alt="">
+        <div><h1>${esc(c.name)}</h1><p class="stage-sub">Средний дроп ${money(c.ev_cents)} · ${c.items.length} предметов</p>
+        <button type="button" class="link" id="cv-odds">Шансы и гарантии</button></div>
+      </div>
+      ${lines.length ? `<p class="pity">${lines.join(" · ")}</p>` : ""}
+      <div class="spin-controls">
+        <div class="mult" role="radiogroup" aria-label="Сколько кейсов">${C.spin.counts.map((n) => `<button type="button" data-count="${n}" class="${n === ui.count ? "on" : ""}">×${n}</button>`).join("")}</div>
+        <button class="btn-spin" id="spin-btn" type="button"><span>ОТКРЫТЬ</span><em>${money(c.price_cents * ui.count)}</em></button>
+        ${c.free ? `<div class="alt-spins">
+          <button class="btn-free" id="free-btn" type="button" ${energy >= ui.count ? "" : "disabled"}>Бесплатно · <b>${energy}</b></button>
+          ${M.attempts ? `<button class="btn-free" id="attempt-btn" type="button" ${M.attempts >= ui.count ? "" : "disabled"}>Попытка ⭐ · <b>${M.attempts}</b></button>` : ""}</div>` : ""}
+        <p class="timer" id="spin-note"></p>
+      </div>
+      <h2 class="h-sub">Что внутри</h2>
+      <div class="grid small">${c.items.map((i) => `<div class="tile" style="${tc(i.tier)}">
+        <span class="chance">${pct(i.p)}</span><img src="${esc(i.image_url)}" alt="" loading="lazy">
+        <span class="n">${esc(i.name)}</span><span class="p">${money(i.min_cents)}${i.max_cents > i.min_cents ? "+" : ""}</span></div>`).join("")}</div>
+      <p class="note">Чем дороже скин, тем реже он выпадает: шанс обратно пропорционален цене. Цена кейса = средний дроп по рынку / 0,8.</p>`;
+    v.querySelector("#cv-back").onclick = () => { ui.caseId = null; renderCases(); };
+    v.querySelector("#cv-odds").onclick = () => openOdds(c.id);
+    v.querySelector(".mult").onclick = (e) => { const b = e.target.closest("[data-count]"); if (b) { ui.count = +b.dataset.count; renderCaseView(); } };
+    v.querySelector("#spin-btn").onclick = () => doSpin("coin");
+    if (v.querySelector("#free-btn")) v.querySelector("#free-btn").onclick = () => doSpin("free");
+    if (v.querySelector("#attempt-btn")) v.querySelector("#attempt-btn").onclick = () => doSpin("attempt");
+    tickTimer();
+  }
+
+  $("banners").addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-ad]");
+    if (!b) return;
+    try {
+      const res = await api.post(`/banners/${b.dataset.ad}/click`);
+      const t = api.tg();
+      if (t && !window.SKINS_DEMO && t.openTelegramLink && res.url.startsWith("https://t.me/")) t.openTelegramLink(res.url);
+      else if (!window.SKINS_DEMO) window.open(res.url, "_blank", "noopener");
+      else toast("В Telegram откроется канал " + res.url.replace("https://", ""));
+    } catch (err) { handleError(err); }
+  });
+  $("quick").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-q]");
+    if (!b) return;
+    ({ free: () => openCase(C.free_case_id), wheel: () => openWheel(), tasks: openTasks, luck: () => toast(`Удача: скины дороже кейса выпадают чаще. Работает на кейсах до ${money(C.luck.max_case_cents)}, один спин удачи на кейс`) })[b.dataset.q]();
+  });
+  $("cat-chips").addEventListener("click", (e) => { const b = e.target.closest("[data-cat]"); if (b) { ui.cat = b.dataset.cat; renderCases(); } });
+  $("case-groups").addEventListener("click", (e) => { const b = e.target.closest("[data-case]"); if (b) openCase(b.dataset.case); });
 
   let meAt = Date.now();
   function tickTimer() {
     if (!M) return;
-    const el = $("spin-note");
-    const common = ui.level === "common";
     const parts = [];
-    if (common && selectedCase() && selectedCase().free) {
-      if (M.energy.now >= M.energy.max) parts.push("Бесплатные спины накоплены: 3 из 3");
+    const c = ui.caseId && caseById(ui.caseId);
+    if (!c || c.free) {
+      if (M.energy.now >= M.energy.max) parts.push("Бесплатные спины накоплены");
       else if (M.energy.next_at) {
         const left = Math.max(0, Math.round(M.energy.next_at - Date.now() / 1000));
         const h = Math.floor(left / 3600), m = Math.floor((left % 3600) / 60), s = left % 60;
-        parts.push(`Бесплатный спин через ${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`);
+        parts.push(`Бесплатный через ${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`);
       }
     }
-    parts.push(common ? `За монеты сегодня ещё ${M.coin_spins_left}` : `Уровни: ещё ${M.level_spins_left} сегодня`);
-    el.textContent = parts.join(" · ");
+    if (c) parts.push(`За монеты сегодня ещё ${M.coin_spins_left}`);
+    const el = $("spin-note");
+    if (el) el.textContent = parts.join(" · ");
+    const q = $("q-free");
+    if (q && !(M.energy.now + M.bonus_spins) && parts[0]) q.textContent = parts[0].replace("Бесплатный через ", "");
   }
   setInterval(() => {
     tickTimer();
@@ -266,86 +300,35 @@
       refresh(false).catch(() => {});
     }
   }, 1000);
-
-  $("level-rail").addEventListener("click", (e) => {
-    const b = e.target.closest("[data-level]");
-    if (!b) return;
-    ui.level = b.dataset.level;
-    settings.level = ui.level;
-    saveSettings();
-    haptic("tick");
-    renderPlay();
-  });
-  $("case-rail").addEventListener("click", (e) => {
-    const b = e.target.closest("[data-case]");
-    if (!b) return;
-    ui.caseId = b.dataset.case;
-    haptic("tick");
-    renderPlay();
-  });
-  $("mult").addEventListener("click", (e) => {
-    const b = e.target.closest("[data-count]");
-    if (!b) return;
-    ui.count = +b.dataset.count;
-    renderPlay();
-  });
-  $("spin-btn").addEventListener("click", () => doSpin("coin"));
-  $("free-btn").addEventListener("click", () => doSpin("free"));
-  $("attempt-btn").addEventListener("click", () => doSpin("attempt"));
-  $("contents-btn").addEventListener("click", openContents);
-  $("odds-btn").addEventListener("click", () => openOdds(ui.level));
-  $("wheel-card").addEventListener("click", openWheel);
-  $("tasks-card").addEventListener("click", openTasks);
-  $("raffle-card").addEventListener("click", openRaffle);
-
-  function openContents() {
-    const c = selectedCase();
-    const blocks = CASE_TIERS.filter((t) => c.pools[t] && c.pools[t].length).map((t) => {
-      const o = C.case_odds.find((x) => x.tier === t);
-      const list = t === "secret"
-        ? `<p class="lead">${c.pools[t].length} вариантов ножей и перчаток, например: ${c.pools[t].slice(0, 6).map((i) => esc(i.name)).join(", ")}…</p>`
-        : `<div class="grid">${c.pools[t].map((i) => `<div class="tile" style="${tc(t)}"><img src="${esc(i.image_url)}" alt="" loading="lazy"><span class="n">${esc(i.name)}</span><span class="p">${money(i.min_cents)}–${money(i.max_cents)}</span></div>`).join("")}</div>`;
-      return `<h3 class="tier-h" style="${tc(t)}">${tier(t).icon} ${esc(tier(t).name)} · ${pct(o.p)} · 1 из ${o.one_in}</h3>${list}`;
-    }).join("");
-    openSheet(`<h2>${esc(c.name)}</h2><p class="lead">Цена кейса ${money(c.price_cents)}: средний дроп ${money(c.ev_cents)} по ценам рынка, делённый на 0,8. Внутри ступени все предметы выпадают одинаково часто.</p>${blocks}`);
-  }
-
-  function needsConfirm(cost) {
-    return cost >= C.spin.confirm_from_cents || cost > M.balance_cents * C.spin.confirm_balance_share;
-  }
+  setInterval(() => { if (ui.tab === "cases") loadLive(); }, 30000);
 
   async function doSpin(source) {
     if (busy) return;
     busy = true;
-    $("spin-btn").disabled = true;
+    const btn = $("spin-btn");
+    if (btn) btn.disabled = true;
     try {
-      const common = ui.level === "common";
-      const cost = currentPrice() * ui.count;
-      let confirmed = false;
-      if (source === "coin" && cost <= M.balance_cents && needsConfirm(cost)) {
-        const scale = currentScale().map((o) => `${tier(o.tier).name} ${pct(o.p)}`).join(", ");
-        confirmed = await confirmSheet({ title: `Открыть ×${ui.count}?`, text: `Спишется <b>${money(cost)}</b>.<br><small class="lead">${scale}</small>`, ok: "Подтвердить", pause: C.spin.confirm_pause_s });
-        if (!confirmed) return;
-      }
-      const body = { case_id: common ? ui.caseId : null, level: ui.level, source, count: ui.count, confirmed };
-      const res = await withConfirm((c) => api.post("/spin", { ...body, confirmed: confirmed || c }), "Подтверди покупку");
+      const body = { case_id: ui.caseId, source, count: ui.count };
+      const res = await withConfirm((c) => api.post("/spin", { ...body, confirmed: c }), `Открыть ×${ui.count}?`, "Открыть");
       if (!res) return;
       haptic("medium");
-      const best = res.drops.reduce((a, b) => (rank(b.items[0].tier) > rank(a.items[0].tier) ? b : a));
+      const best = res.drops.reduce((a, b) => (rank(b.items[0].tier) > rank(a.items[0].tier) || (b.items[0].tier === a.items[0].tier && b.items[0].price_cents > a.items[0].price_cents) ? b : a));
       await playReel(best);
       await refresh();
       showResults(res.drops.map((d) => d.items[0]));
       api.post("/me/last-drop/ack").catch(() => {});
+      loadLive();
       if (M.break_reminder) maybeBreak();
     } catch (err) {
       handleError(err);
     } finally {
       busy = false;
-      $("spin-btn").disabled = false;
+      const b2 = $("spin-btn");
+      if (b2) b2.disabled = false;
     }
   }
 
-  // Лента: соседи пришли с сервера (по обычным шансам), остановка там, где решил сервер.
+  // Лента: соседи пришли с сервера (по шансам кейса), остановка там, где решил сервер.
   function playReel(drop) {
     return new Promise((resolve) => {
       const reels = $("reels");
@@ -355,7 +338,7 @@
       const strip = reels.querySelector(".strip");
       const cellW = strip.firstElementChild.getBoundingClientRect().width;
       const reelW = reels.firstElementChild.getBoundingClientRect().width;
-      const duration = settings.fast ? 600 : 5600;
+      const duration = settings.fast ? 600 : 5000;
       const target = -(drop.stop_index * cellW + cellW / 2 - reelW / 2) + (Math.random() - 0.5) * cellW * 0.7;
       let done = false, raf = 0, last = -1;
       const finish = () => {
@@ -366,7 +349,7 @@
         strip.style.transform = `translateX(${target}px)`;
         const t = drop.items[0].tier;
         haptic(rank(t) >= rank("legendary") ? "success" : rank(t) >= rank("epic") ? "heavy" : "light");
-        setTimeout(() => { $("reel-overlay").hidden = true; resolve(); }, settings.fast ? 150 : 450);
+        setTimeout(() => { $("reel-overlay").hidden = true; resolve(); }, settings.fast ? 150 : 400);
       };
       $("reel-skip").onclick = finish;
       requestAnimationFrame(() => {
@@ -386,39 +369,42 @@
   }
 
   function showResults(items) {
-    if (items.length === 1) return showItem(items[0], { fresh: true });
     items = items.slice().sort((a, b) => rank(b.tier) - rank(a.tier) || b.price_cents - a.price_cents);
     const total = items.reduce((s, i) => s + i.price_cents, 0);
-    const blue = items.filter((i) => i.tier === "rare" && !i.overflow_until);
-    const blueSum = blue.reduce((s, i) => s + i.sell_cents, 0);
+    const sellSum = items.reduce((s, i) => s + i.sell_cents, 0);
     const best = items[0];
+    const one = items.length === 1;
     const body = openSheet(`
-      <div class="tier-label" style="${tc(best.tier)}">${tier(best.tier).icon} ${esc(tier(best.tier).name)}<small>лучший дроп из ${items.length}</small></div>
+      <div class="tier-label" style="${tc(best.tier)}">${tier(best.tier).icon} ${esc(tier(best.tier).name)}<small>${one ? "шанс 1 из " + best.one_in : "лучший из " + items.length}</small></div>
       <div class="item-hero ${rank(best.tier) >= rank("epic") ? "flash" : ""}" style="${tc(best.tier)}"><img src="${esc(best.image_url)}" alt=""></div>
-      <p class="lead center">Дроп на ${money(total)}</p>
-      <div class="results">${items.map((i) => tileHtml(i)).join("")}</div>
+      ${one ? `<div class="item-name"><b>${best.stattrak ? "StatTrak™ " : ""}${itemTitle(best)}</b><span>${best.wear ? WEAR[best.wear] : ""}${best.float != null ? " · " + best.float.toFixed(4) : ""}</span></div>` : ""}
+      <p class="lead center">Дроп на <b>${money(total)}</b></p>
+      ${one ? "" : `<div class="results">${items.map((i) => tileHtml(i)).join("")}</div>`}
       <div class="actions">
-        <button type="button" id="r-keep">Забрать всё</button>
-        <button type="button" id="r-sell" ${blue.length ? "" : "disabled"}>Продать синие · ${money(blueSum)}</button>
+        <button type="button" id="r-keep">Забрать</button>
+        <button type="button" class="primary" id="r-sell">Продать · ${money(sellSum)}</button>
+        ${ui.caseId ? `<button type="button" class="wide" id="r-again">Ещё ×${ui.count}</button>` : ""}
       </div>`);
-    body.querySelector(".results").addEventListener("click", (e) => {
+    const res = body.querySelector(".results");
+    if (res) res.addEventListener("click", (e) => {
       const t = e.target.closest("[data-item]");
       if (t) showItem(findItem(+t.dataset.item) || items.find((x) => x.id === +t.dataset.item));
     });
     body.querySelector("#r-keep").onclick = closeSheet;
-    body.querySelector("#r-sell").onclick = () => sellItems(blue.map((i) => i.id), false);
+    body.querySelector("#r-sell").onclick = () => sellIds(items.map((i) => i.id), sellSum, true);
+    const again = body.querySelector("#r-again");
+    if (again) again.onclick = () => { closeSheet(); doSpin("coin"); };
   }
 
   function tileHtml(it, extra = "") {
     const badges = [it.locked ? "🔒" : "", it.state === "market" ? "⇅" : "", it.overflow_until ? "⚠" : "", it.hold_until ? "⏳" : ""].join("");
     return `<button type="button" class="tile ${extra}" data-item="${it.id}" style="${tc(it.tier)}">
-      <span class="ico">${tier(it.tier).icon}</span><span class="badges">${badges}</span>
+      <span class="badges">${badges}</span>
       <img src="${esc(it.image_url)}" alt="" loading="lazy">
       <span class="w">${wearLine(it) || "&nbsp;"}</span>
       <span class="n">${itemTitle(it)}</span>
       <span class="p">${money(it.price_cents)}</span></button>`;
   }
-  const findItem = (id) => INV && INV.items.find((x) => x.id === id);
 
   // ---------- карточка предмета ----------
   function chartSvg(points) {
@@ -434,54 +420,57 @@
       <div class="chart-axis"><span>${points[0].day.slice(5).split("-").reverse().join(".")}</span><span>${money(lo)} – ${money(hi)}</span><span>сегодня</span></div>`;
   }
 
+  function originLabel(it) {
+    if (it.origin.startsWith("case:")) { const c = caseById(it.origin.slice(5)); return c ? "Кейс «" + c.name + "»" : "Кейс"; }
+    return { upgrade: "Апгрейды", contract: "Контракт", wheel: "Колесо", raffle: "Розыгрыш", referral: "Награда за друга" }[it.origin] || "Рынок или обмен";
+  }
+
   async function showItem(it, opts = {}) {
     if (!it) return;
     const t = tier(it.tier);
     const growth = it.drop_price_cents ? (it.price_cents - it.drop_price_cents) / it.drop_price_cents : 0;
-    const originCase = it.origin.startsWith("case:") ? (C.cases.find((c) => c.id === it.origin.slice(5)) || {}).name : null;
-    const originLevel = it.origin.startsWith("level:") ? (C.levels.find((l) => l.id === it.origin.slice(6)) || {}).name : null;
-    const origin = originCase ? "Кейс " + originCase : originLevel ? "Крутка " + originLevel
-      : { upgrade: "Апгрейдер", contract: "5 в 1", wheel: "Колесо", raffle: "Розыгрыш", referral: "Награда" }[it.origin] || "Рынок или обмен";
     const big = rank(it.tier) >= rank("epic");
-    const busyState = it.state !== "free";
+    const free = usable(it);
     const isMine = !!findItem(it.id);
     const body = openSheet(`
-      <div class="tier-label" style="${tc(it.tier)}">${t.icon} ${esc(t.name)}<small>${esc(it.game_rarity)} · шанс ступени в кейсе 1 из ${it.one_in}</small></div>
+      <div class="tier-label" style="${tc(it.tier)}">${t.icon} ${esc(t.name)}<small>${esc(it.game_rarity)}${it.one_in ? " · 1 из " + it.one_in : ""}</small></div>
       <div class="item-hero ${opts.fresh && big ? "flash" : ""}" style="${tc(it.tier)}"><img src="${esc(it.image_url)}" alt="${esc(it.name)}"></div>
       <div class="item-name"><b>${it.stattrak ? "StatTrak™ " : ""}${itemTitle(it)}</b><span>${it.wear ? WEAR[it.wear] : "Без износа"}</span></div>
       ${it.float != null ? `<div class="floatbar" aria-label="float ${it.float}"><i style="left:calc(${(it.float * 100).toFixed(2)}% - 1px)"></i></div>` : ""}
+      ${isMine ? `<div class="actions">
+        <button type="button" class="primary" id="i-sell" ${free ? "" : "disabled"}>Продать · ${money(it.sell_cents)}</button>
+        <button type="button" id="i-up" ${free && !settings.noUpgrader ? "" : "disabled"}>Апгрейд</button>
+        <button type="button" id="i-ct" ${free ? "" : "disabled"}>В контракт</button>
+        <button type="button" id="i-market" ${free && !it.hold_until && !it.overflow_until ? "" : "disabled"}>На рынок</button>
+      </div>` : ""}
       <div class="stats">
         <div><small>Цена по рынку</small><b>${money(it.price_cents)}</b></div>
         <div><small>С момента дропа</small><b class="${growth > 0 ? "up" : growth < 0 ? "down" : ""}">${growth >= 0 ? "+" : ""}${(growth * 100).toFixed(0)}%</b></div>
         <div><small>Float</small><b>${it.float != null ? it.float.toFixed(6) : "—"}</b></div>
         <div><small>Узор</small><b>${it.pattern}</b></div>
-        <div><small>Откуда</small><b class="txt">${esc(origin)}</b></div>
+        <div><small>Откуда</small><b class="txt">${esc(originLabel(it))}</b></div>
         <div><small>Получен</small><b>${dayStr(it.created_at)}</b></div>
       </div>
       <div id="i-chart"></div>
       ${it.overflow_until ? `<p class="banner">В переполнении до ${new Date(it.overflow_until * 1000).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}. Освободи место, иначе предмет продастся системе по 60%.</p>` : ""}
-      ${it.hold_until ? '<p class="note">На удержании 24 часа после покупки или обмена: на рынок и в обмен пока нельзя.</p>' : ""}
+      ${it.hold_until ? '<p class="note">На удержании 24 часа после покупки или обмена.</p>' : ""}
       ${isMine ? `<div class="actions">
-        <button type="button" class="primary" id="i-sell" ${it.locked || busyState ? "disabled" : ""}>Продать · ${money(it.sell_cents)}</button>
-        <button type="button" id="i-market" ${it.locked || busyState || it.hold_until || it.overflow_until ? "disabled" : ""}>На рынок</button>
-        <button type="button" id="i-up" ${it.locked || busyState || settings.noUpgrader ? "disabled" : ""}>Улучшить</button>
-        <button type="button" id="i-ct" ${it.locked || busyState || !["rare", "epic", "legendary", "mythic"].includes(it.tier) ? "disabled" : ""}>5 в 1</button>
         <button type="button" id="i-show">${(M.showcase || []).includes(it.id) ? "Убрать с витрины" : "На витрину"}</button>
-        <button type="button" id="i-lock" ${busyState ? "disabled" : ""}>${it.locked ? "Снять замок" : "Замок 🔒"}</button>
+        <button type="button" id="i-lock" ${it.state !== "free" ? "disabled" : ""}>${it.locked ? "Снять замок" : "Замок 🔒"}</button>
         <button type="button" id="i-share" class="wide">Показать другу</button>
       </div>
-      <p class="note">Быстрая продажа системе — 60% цены, отменить можно 10 минут. Замок защищает от продажи, апгрейда и 5 в 1.</p>` : ""}`);
+      <p class="note">Продажа системе — 60% цены, отменить можно 10 минут. Замок защищает от продажи, апгрейда и контракта.</p>` : ""}`);
     if (isMine) {
-      body.querySelector("#i-sell").onclick = () => sellItems([it.id], true, it);
+      body.querySelector("#i-sell").onclick = () => sellIds([it.id], it.sell_cents, rank(it.tier) >= rank("epic"));
       body.querySelector("#i-market").onclick = () => openListLot(it);
-      body.querySelector("#i-up").onclick = () => { closeSheet(); ui.up.items = [it.id]; ui.up.coins = 0; ui.up.target = null; switchTab("market", "upgrade"); loadTargets(); };
-      body.querySelector("#i-ct").onclick = () => { closeSheet(); ui.ct.tier = it.tier; ui.ct.items = [it.id]; switchTab("market", "contract"); };
+      body.querySelector("#i-up").onclick = () => { closeSheet(); Object.assign(ui.up, { items: [it.id], coins: 0, target: null, side: "target" }); switchTab("upgrade"); loadTargets(); };
+      body.querySelector("#i-ct").onclick = () => { closeSheet(); if (!ui.ct.items.includes(it.id)) ui.ct.items.push(it.id); switchTab("contract"); };
       body.querySelector("#i-show").onclick = () => toggleShowcase(it);
       body.querySelector("#i-lock").onclick = () => toggleLock(it);
       body.querySelector("#i-share").onclick = () => share(it);
       api.get(`/items/${it.id}`).then((card) => {
         const el = body.querySelector("#i-chart");
-        if (el) el.innerHTML = `<h3 class="h-sub">Цена за 30 дней</h3>${chartSvg(card.chart)}<p class="note">Владельцев: ${card.owners} · событий в истории: ${card.history.length}</p>`;
+        if (el) el.innerHTML = `<h3 class="h-sub">Цена за 30 дней</h3>${chartSvg(card.chart)}`;
       }).catch(() => {});
     }
   }
@@ -489,7 +478,7 @@
   async function toggleLock(it) {
     try {
       if (it.locked) {
-        const ok = await confirmSheet({ title: "Снять замок?", text: "Предмет снова можно будет продать, улучшить или собрать в 5 в 1.", ok: "Снять" });
+        const ok = await confirmSheet({ title: "Снять замок?", text: "Предмет снова можно будет продать, поставить в апгрейд или контракт.", ok: "Снять" });
         if (!ok) return;
         await api.post(`/items/${it.id}/unlock`, { confirm: true });
       } else {
@@ -512,20 +501,20 @@
     } catch (err) { handleError(err); }
   }
 
-  async function sellItems(ids, single, it) {
-    const items = ids.map(findItem).filter(Boolean);
-    const total = items.reduce((s, i) => s + i.sell_cents, 0);
-    if (single && it && rank(it.tier) >= rank("epic")) {
-      const ok = await confirmSheet({ title: "Продать?", text: `${itemTitle(it)} уйдёт системе за <b>${money(total)}</b>.`, ok: "Продать", pause: rank(it.tier) >= rank("mythic") ? 3 : 0 });
-      if (!ok) return;
-    } else if (!single) {
-      const ok = await confirmSheet({ title: `Продать ${items.length} шт.?`, text: `Получишь <b>${money(total)}</b>. Отменить можно 10 минут.`, ok: "Продать" });
+  // Продажа: подтверждение только для групп и для Запрещённого и выше.
+  async function sellIds(ids, total, ask) {
+    if (!ids.length) return toast("Продавать нечего");
+    if (ask || ids.length > 1) {
+      const ok = await confirmSheet({ title: ids.length > 1 ? `Продать ${ids.length} шт.?` : "Продать?", text: `Получишь <b>${money(total)}</b>. Отменить можно 10 минут.`, ok: "Продать" });
       if (!ok) return;
     }
     try {
       const res = await api.post("/items/sell", { item_ids: ids, confirmed: true });
       haptic("success");
       closeSheet();
+      ui.selected.clear();
+      ui.ct.items = ui.ct.items.filter((x) => !ids.includes(x));
+      ui.up.items = ui.up.items.filter((x) => !ids.includes(x));
       await refresh();
       toast(`+${money(res.total_cents)}`, { label: "Отменить", run: () => undoSale(res.sale_id) });
     } catch (err) { handleError(err); }
@@ -545,7 +534,7 @@
       const t = api.tg();
       if (t && !window.SKINS_DEMO) {
         if (res.image_url && t.shareToStory) {
-          t.shareToStory(res.image_url, { text: res.text, widget_link: res.link ? { url: res.link, name: "Крутить" } : undefined });
+          t.shareToStory(res.image_url, { text: res.text, widget_link: res.link ? { url: res.link, name: "Открыть" } : undefined });
         } else {
           t.openTelegramLink(`https://t.me/share/url?url=${encodeURIComponent(res.link || "")}&text=${encodeURIComponent(res.text)}`);
         }
@@ -562,6 +551,304 @@
       <div class="actions"><button type="button" class="primary wide" id="br-ok">Понятно</button></div>`).querySelector("#br-ok").onclick = closeSheet;
   }
 
+  // ---------- АПГРЕЙДЫ ----------
+  function upStake() {
+    ui.up.items = ui.up.items.filter((id) => { const i = findItem(id); return i && usable(i); });
+    const items = ui.up.items.map(findItem);
+    return { items, sum: items.reduce((s, i) => s + i.price_cents, 0) + ui.up.coins };
+  }
+  function upChance(stake, target) {
+    if (!target || target.price_cents <= stake || stake <= 0) return 0;
+    return Math.min(C.upgrader.max_chance_pct / 100, (stake / target.price_cents) * C.upgrader.k * (1 + (M.upgrade_bonus_pct || 0) / 100));
+  }
+
+  function renderUpgrade() {
+    if (!INV) return;
+    const { items, sum } = upStake();
+    const box = $("up-stake-items");
+    box.className = "up-items" + (items.length > 1 ? " many" : "");
+    box.innerHTML = items.length
+      ? items.map((i) => `<img src="${esc(i.image_url)}" alt="">`).join("") + (items.length === 1 ? `<span class="nm">${itemTitle(items[0])}</span>` : "") + (ui.up.coins ? `<span class="nm">+ ${money(ui.up.coins)}</span>` : "")
+      : ui.up.coins ? `<span class="nm">${money(ui.up.coins)} монетами</span>` : '<span class="plus">+</span>';
+    $("up-stake-sum").textContent = money(sum);
+    const t = ui.up.target;
+    $("up-target-items").innerHTML = t ? `<img src="${esc(t.image_url)}" alt=""><span class="nm">${t.stattrak ? "ST™ " : ""}${esc(t.name)}${t.wear ? " · " + t.wear : ""}</span>` : '<span class="plus">?</span>';
+    $("up-target-sum").textContent = t ? money(t.price_cents) : "—";
+    const chance = upChance(sum, t);
+    $("up-chance").textContent = pct(chance, 2);
+    $("up-arc").setAttribute("stroke-dasharray", `${chance * 1000} 1000`);
+    const bonus = M.upgrade_bonus_pct ? ` × ${(1 + M.upgrade_bonus_pct / 100).toFixed(2).replace(".", ",")} бонус` : "";
+    $("up-formula").innerHTML = t ? `<b>${money(sum)}</b> ÷ <b>${money(t.price_cents)}</b> × 0,8${bonus} = <b>${pct(chance, 2)}</b>`
+      : "Шанс = ставка ÷ цель × 0,8, не больше 80%. Выбери ставку, потом цель.";
+    document.querySelectorAll("#up-seg button").forEach((b) => b.classList.toggle("on", b.dataset.side === ui.up.side));
+    $("up-stake-pane").hidden = ui.up.side !== "stake";
+    $("up-target-pane").hidden = ui.up.side !== "target";
+    if (ui.up.side === "stake") {
+      const coins = $("up-coins");
+      if (document.activeElement !== coins) coins.value = ui.up.coins ? fromCents(ui.up.coins) : "";
+      const list = INV.items.filter(usable).sort((a, b) => b.price_cents - a.price_cents);
+      $("up-inv").innerHTML = list.length ? list.map((i) => tileHtml(i, ui.up.items.includes(i.id) ? "sel" : "")).join("")
+        : '<p class="empty">Свободных предметов нет — поставь монеты.</p>';
+    } else {
+      $("up-mults").innerHTML = C.upgrader.multipliers.map((m) => `<button type="button" data-m="${m}" class="${ui.up.mult === m ? "on" : ""}">×${num(m)}</button>`).join("");
+      $("up-targets").innerHTML = sum > 0 ? (ui.up.targets.length ? ui.up.targets.map((x, i) => `<button type="button" class="tile ${t && t.catalog_item_id === x.catalog_item_id && t.wear === x.wear && t.stattrak === x.stattrak ? "sel" : ""}" data-t="${i}" style="${tc(x.tier)}">
+        <span class="chance">${pct(upChance(sum, x), 1)}</span><img src="${esc(x.image_url)}" alt="" loading="lazy"><span class="w">${x.stattrak ? '<span class="st">ST™</span> ' : ""}${x.wear || ""}</span><span class="n">${esc(x.name)}</span><span class="p">${money(x.price_cents)}</span></button>`).join("")
+        : '<p class="empty">Подбираем цели…</p>') : '<p class="empty">Сначала выбери ставку.</p>';
+    }
+    $("up-go").disabled = !(chance > 0) || ui.up.spinning || M.upgrades_left <= 0;
+    $("up-note").textContent = `Сегодня ещё ${M.upgrades_left} из ${C.upgrader.per_day}. При неудаче ставка сгорает, возвращаются запчасти на 10%, а следующий апгрейд получает +3% к шансу.`;
+  }
+
+  let targetsReq = 0;
+  async function loadTargets() {
+    const { sum } = upStake();
+    const req = ++targetsReq;
+    if (sum <= 0) { ui.up.targets = []; ui.up.target = null; renderUpgrade(); return; }
+    try {
+      const res = await api.get(`/upgrades/targets?stake_cents=${sum}&mult=${ui.up.mult}`);
+      if (req !== targetsReq) return;
+      ui.up.targets = res.targets;
+      if (!ui.up.target || ui.up.target.price_cents <= sum) ui.up.target = res.targets[0] || null;
+    } catch (err) { handleError(err); }
+    renderUpgrade();
+  }
+
+  $("up-seg").addEventListener("click", (e) => { const b = e.target.closest("[data-side]"); if (!b) return; ui.up.side = b.dataset.side; renderUpgrade(); });
+  $("up-stake").addEventListener("click", () => { ui.up.side = "stake"; renderUpgrade(); });
+  $("up-target").addEventListener("click", () => { ui.up.side = "target"; if (!ui.up.targets.length) loadTargets(); renderUpgrade(); });
+  $("up-inv").addEventListener("click", (e) => {
+    const t = e.target.closest("[data-item]");
+    if (!t) return;
+    const id = +t.dataset.item;
+    const k = ui.up.items.indexOf(id);
+    if (k >= 0) ui.up.items.splice(k, 1);
+    else if (ui.up.items.length < C.upgrader.max_items) ui.up.items.push(id);
+    else return toast(`В ставку до ${C.upgrader.max_items} предметов`);
+    haptic("tick");
+    ui.up.target = null;
+    renderUpgrade();
+    loadTargets();
+  });
+  let coinsTimer;
+  $("up-coins").addEventListener("input", (e) => {
+    ui.up.coins = Math.max(0, Math.min(toCents(e.target.value), M.balance_cents));
+    ui.up.target = null;
+    clearTimeout(coinsTimer);
+    coinsTimer = setTimeout(loadTargets, 300);
+    renderUpgrade();
+  });
+  $("up-coins-max").addEventListener("click", () => { ui.up.coins = M.balance_cents; ui.up.target = null; renderUpgrade(); loadTargets(); });
+  $("up-mults").addEventListener("click", (e) => { const b = e.target.closest("[data-m]"); if (!b) return; ui.up.mult = +b.dataset.m; ui.up.target = null; loadTargets(); });
+  $("up-targets").addEventListener("click", (e) => { const b = e.target.closest("[data-t]"); if (!b) return; ui.up.target = ui.up.targets[+b.dataset.t]; haptic("tick"); renderUpgrade(); });
+
+  $("up-go").addEventListener("click", async () => {
+    const { sum } = upStake();
+    const t = ui.up.target;
+    if (!t) return;
+    const target = { catalog_item_id: t.catalog_item_id, wear: t.wear, stattrak: t.stattrak };
+    ui.up.spinning = true;
+    renderUpgrade();
+    try {
+      const quote = await api.post("/upgrades/quote", { stake_item_ids: ui.up.items, stake_coins_cents: ui.up.coins, target });
+      if (quote.confirm_required) {
+        const ok = await confirmSheet({ title: "Точно?", text: `Ставка ${money(sum)} сгорит с шансом ${pct(1 - quote.chance_pct / 100, 1)}.`, ok: "Апгрейд" });
+        if (!ok) return;
+      }
+      const res = await api.post("/upgrades", { stake_item_ids: ui.up.items, stake_coins_cents: ui.up.coins, target, quote_chance_pct: quote.chance_pct, confirmed: true });
+      await spinNeedle(res.roll / 100);
+      haptic(res.success ? "success" : "error");
+      Object.assign(ui.up, { items: [], coins: 0, target: null, targets: [], side: "stake" });
+      await refresh();
+      if (res.success) showItem(res.item, { fresh: true });
+      else openSheet(`<h2>Не получилось</h2><p>Шанс был ${num(res.chance_pct)}%, стрелка остановилась на ${num(res.roll.toFixed(1))}%.</p>
+        <p>Запчасти: <b>+${money(res.parts_cents)}</b>. Следующий апгрейд получит +${res.next_bonus_pct}% к шансу.</p>
+        <div class="actions"><button type="button" class="primary wide" id="up-ok">Понятно</button></div>`).querySelector("#up-ok").onclick = closeSheet;
+    } catch (err) {
+      handleError(err);
+    } finally {
+      ui.up.spinning = false;
+      renderUpgrade();
+    }
+  });
+
+  function spinNeedle(roll) {
+    return new Promise((resolve) => {
+      const n = $("up-needle");
+      n.style.transition = "none";
+      n.style.transform = "rotate(0deg)";
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        const ms = settings.fast ? 500 : 3200;
+        n.style.transition = `transform ${ms}ms cubic-bezier(.15,.7,.15,1)`;
+        n.style.transform = `rotate(${360 * 4 + roll * 360}deg)`;
+        setTimeout(resolve, ms + 200);
+      }));
+    });
+  }
+
+  // ---------- КОНТРАКТЫ ----------
+  function contractRange(total) {
+    const t = C.contracts.table;
+    return { min: Math.round(total * Math.min(...t.map((x) => x.mult))), max: Math.round(total * Math.max(...t.map((x) => x.mult))),
+      ev: Math.round(total * t.reduce((s, x) => s + x.mult * x.p, 0)) };
+  }
+
+  function renderContract() {
+    if (!INV) return;
+    const cc = C.contracts;
+    const pool = INV.items.filter(usable);
+    ui.ct.items = ui.ct.items.filter((id) => pool.some((i) => i.id === id));
+    const chosen = ui.ct.items.map((id) => pool.find((i) => i.id === id));
+    $("ct-count").textContent = `${chosen.length} / ${cc.max_items}`;
+    $("ct-slots").innerHTML = Array.from({ length: cc.max_items }, (_, k) => chosen[k]
+      ? `<button type="button" class="ct-slot full" data-rm="${chosen[k].id}" style="${tc(chosen[k].tier)}"><img src="${esc(chosen[k].image_url)}" alt=""></button>`
+      : `<div class="ct-slot ${k < cc.min_items ? "need" : ""}"><span class="plus small">+</span></div>`).join("");
+    const total = chosen.reduce((s, i) => s + i.price_cents, 0);
+    const r = contractRange(total);
+    const floats = chosen.filter((i) => i.float != null).map((i) => i.float);
+    const avg = floats.length ? floats.reduce((s, x) => s + x, 0) / floats.length : null;
+    const st = chosen.length && chosen.every((i) => i.stattrak);
+    const tooMuch = total > cc.max_total_cents;
+    $("ct-sum").innerHTML = chosen.length ? `
+      <div class="stats">
+        <div><small>Вклад</small><b>${money(total)}</b></div>
+        <div><small>Результат</small><b>${money(r.min)} – ${money(r.max)}</b></div>
+        <div><small>В среднем</small><b>${money(r.ev)}</b></div>
+        <div><small>Средний float</small><b>${avg != null ? avg.toFixed(4) : "—"}${st ? " · ST™" : ""}</b></div>
+      </div>${tooMuch ? `<p class="banner">Контракт дороже ${money(cc.max_total_cents)} не собрать: убери самый дорогой предмет.</p>` : ""}`
+      : '<p class="lead">Выбери предметы ниже — любой редкости, хоть ширпотреб с ножом.</p>';
+    const tiers = DROP_TIERS.filter((t) => pool.some((i) => i.tier === t));
+    $("ct-chips").innerHTML = [["all", "Все"]].concat(tiers.map((t) => [t, tier(t).name])).map(([id, label]) =>
+      `<button type="button" class="chip ${ui.ct.tier === id ? "on" : ""}" data-ct="${id}" ${id !== "all" ? `style="${tc(id)}"` : ""}>${id !== "all" ? `<i>${tier(id).icon}</i>` : ""}${esc(label)}</button>`).join("");
+    const list = pool.filter((i) => ui.ct.tier === "all" || i.tier === ui.ct.tier).sort((a, b) => b.price_cents - a.price_cents);
+    $("ct-grid").innerHTML = list.length ? list.map((i) => tileHtml(i, ui.ct.items.includes(i.id) ? "sel" : "")).join("") : '<p class="empty">Свободных предметов нет. Открой кейсы.</p>';
+    $("ct-go").disabled = chosen.length < cc.min_items || tooMuch;
+    $("ct-note").innerHTML = `Цена результата = вклад × множитель: ${cc.table.map((x) => `×${num(x.mult)} ${pct(x.p, 1)}`).join(", ")}. Float результата — средний float вклада, StatTrak™ — если весь вклад StatTrak™.`;
+  }
+  $("ct-chips").addEventListener("click", (e) => { const b = e.target.closest("[data-ct]"); if (!b) return; ui.ct.tier = b.dataset.ct; renderContract(); });
+  $("ct-clear").addEventListener("click", () => { ui.ct.items = []; renderContract(); });
+  $("ct-slots").addEventListener("click", (e) => { const b = e.target.closest("[data-rm]"); if (!b) return; ui.ct.items = ui.ct.items.filter((x) => x !== +b.dataset.rm); renderContract(); });
+  $("ct-grid").addEventListener("click", (e) => {
+    const t = e.target.closest("[data-item]");
+    if (!t) return;
+    const id = +t.dataset.item;
+    const i = ui.ct.items.indexOf(id);
+    if (i >= 0) ui.ct.items.splice(i, 1);
+    else if (ui.ct.items.length < C.contracts.max_items) ui.ct.items.push(id);
+    else return toast(`В контракт до ${C.contracts.max_items} предметов`);
+    haptic("tick");
+    renderContract();
+  });
+  $("ct-go").addEventListener("click", async () => {
+    try {
+      const res = await withConfirm((c) => api.post("/contracts", { item_ids: ui.ct.items, confirmed: c }), "Подписать контракт?", "Подписать");
+      if (!res) return;
+      haptic(res.mult >= 1 ? "success" : "warning");
+      ui.ct.items = [];
+      await refresh();
+      await showItem(res.item, { fresh: true });
+      toast(`Контракт ×${num(res.mult)}: ${money(res.total_cents)} → ${money(res.item.price_cents)}`);
+    } catch (err) { handleError(err); }
+  });
+
+  // ---------- ИНВЕНТАРЬ ----------
+  function renderInventory() {
+    if (!INV) return;
+    const s = INV.summary;
+    $("col-slots").textContent = `${s.used} / ${s.total}`;
+    $("col-value").textContent = money(s.value_cents);
+    $("col-week").textContent = s.week_change_cents ? `${s.week_change_cents > 0 ? "+" : ""}${money(s.week_change_cents)} за неделю` : "";
+    $("col-week").className = s.week_change_cents > 0 ? "up" : s.week_change_cents < 0 ? "down" : "";
+    $("col-select").textContent = ui.select ? "Готово" : "Выбрать";
+    const ob = $("overflow-banner");
+    ob.hidden = !s.overflow;
+    ob.textContent = s.overflow ? `Переполнение: ${s.overflow} из ${C.inventory.overflow_slots}. Освободи место за 48 часов, иначе эти предметы продадутся системе по 60%.` : "";
+    const items = INV.items;
+    const groups = C.sell_quick.map((g) => {
+      const list = items.filter((i) => sellable(i) && (g.id === "all" || i.tier === g.id));
+      return { ...g, n: list.length, sum: list.reduce((a, i) => a + i.sell_cents, 0) };
+    }).filter((g) => g.n);
+    $("sell-quick").hidden = !groups.length;
+    $("sell-quick").innerHTML = groups.length ? `<span class="sq-label">Быстрая продажа</span>` + groups.map((g) =>
+      `<button type="button" class="sq ${g.id === "all" ? "all" : ""}" data-sg="${g.id}" ${g.id !== "all" ? `style="${tc(g.id)}"` : ""}><b>${esc(g.label)}</b><small>${g.n} шт. · ${money(g.sum)}</small></button>`).join("") : "";
+    const chips = [{ id: "all", label: "Все" }]
+      .concat(DROP_TIERS.filter((t) => items.some((i) => i.tier === t)).map((t) => ({ id: t, label: tier(t).name, icon: tier(t).icon, tier: t })))
+      .concat(items.some((i) => i.stattrak) ? [{ id: "st", label: "StatTrak™" }] : [])
+      .concat(items.some((i) => i.locked) ? [{ id: "locked", label: "🔒 Под замком" }] : [])
+      .concat(items.some((i) => i.state === "market") ? [{ id: "market", label: "⇅ На рынке" }] : [])
+      .concat(items.some((i) => i.overflow_until) ? [{ id: "overflow", label: "⚠ Переполнение" }] : []);
+    $("col-chips").innerHTML = chips.map((c) => `<button type="button" class="chip ${ui.colFilter === c.id ? "on" : ""}" data-f="${c.id}" ${c.tier ? `style="${tc(c.tier)}"` : ""}>${c.icon ? `<i>${c.icon}</i>` : ""}${esc(c.label)}</button>`).join("");
+    let list = items.filter((i) => ui.colFilter === "all" || i.tier === ui.colFilter || (ui.colFilter === "st" && i.stattrak)
+      || (ui.colFilter === "locked" && i.locked) || (ui.colFilter === "market" && i.state === "market") || (ui.colFilter === "overflow" && i.overflow_until));
+    const q = ui.colSearch.trim().toLowerCase();
+    if (q) list = list.filter((i) => i.name.toLowerCase().includes(q));
+    const growth = (i) => (i.price_cents - i.drop_price_cents) / (i.drop_price_cents || 1);
+    const sorters = { new: (a, b) => b.id - a.id, price: (a, b) => b.price_cents - a.price_cents, cheap: (a, b) => a.price_cents - b.price_cents,
+      tier: (a, b) => rank(b.tier) - rank(a.tier) || b.price_cents - a.price_cents, growth: (a, b) => growth(b) - growth(a) };
+    list.sort(sorters[ui.colSort]);
+    for (const id of [...ui.selected]) if (!items.some((i) => i.id === id && usable(i))) ui.selected.delete(id);
+    $("col-grid").innerHTML = list.map((i) => tileHtml(i, ui.select ? (ui.selected.has(i.id) ? "sel" : usable(i) ? "" : "dim") : "")).join("");
+    $("col-empty").hidden = items.length > 0;
+    renderSelbar();
+  }
+
+  function renderSelbar() {
+    const on = ui.tab === "inventory" && ui.select;
+    $("selbar").hidden = !on;
+    if (!on) return;
+    const sel = [...ui.selected].map(findItem).filter(Boolean);
+    $("sel-info").innerHTML = `<b>${sel.length} шт.</b><small>${money(sel.reduce((s, i) => s + i.sell_cents, 0))}</small>`;
+    ["sel-ct", "sel-up", "sel-sell"].forEach((id) => ($(id).disabled = !sel.length));
+  }
+
+  $("col-select").addEventListener("click", () => { ui.select = !ui.select; ui.selected.clear(); renderInventory(); });
+  $("col-chips").addEventListener("click", (e) => { const b = e.target.closest("[data-f]"); if (b) { ui.colFilter = b.dataset.f; renderInventory(); } });
+  $("col-search").addEventListener("input", (e) => { ui.colSearch = e.target.value; renderInventory(); });
+  $("col-sort").addEventListener("change", (e) => { ui.colSort = e.target.value; renderInventory(); });
+  $("col-grid").addEventListener("click", (e) => {
+    const t = e.target.closest("[data-item]");
+    if (!t) return;
+    const it = findItem(+t.dataset.item);
+    if (!ui.select) return showItem(it);
+    if (!usable(it)) return toast("Этот предмет сейчас занят или под замком");
+    if (ui.selected.has(it.id)) ui.selected.delete(it.id); else ui.selected.add(it.id);
+    haptic("tick");
+    t.classList.toggle("sel", ui.selected.has(it.id));
+    renderSelbar();
+  });
+  $("sell-quick").addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-sg]");
+    if (!b) return;
+    try {
+      const q = await api.post("/items/sell-group/quote", { group: b.dataset.sg });
+      const label = C.sell_quick.find((g) => g.id === b.dataset.sg).label;
+      if (!q.item_ids.length) return toast("Продавать нечего");
+      const ok = await confirmSheet({ title: `${label}: продать ${q.count} шт.?`, text: `Получишь <b>${money(q.total_cents)}</b> (60% цены). Предметы под замком не продаются. Отменить можно 10 минут.`, ok: "Продать" });
+      if (!ok) return;
+      const res = await api.post("/items/sell", { item_ids: q.item_ids, confirmed: true });
+      haptic("success");
+      await refresh();
+      toast(`+${money(res.total_cents)}`, { label: "Отменить", run: () => undoSale(res.sale_id) });
+    } catch (err) { handleError(err); }
+  });
+  $("sel-sell").addEventListener("click", () => {
+    const sel = [...ui.selected].map(findItem).filter(Boolean);
+    sellIds(sel.map((i) => i.id), sel.reduce((s, i) => s + i.sell_cents, 0), true).then(() => { if (!ui.selected.size) { ui.select = false; renderInventory(); } });
+  });
+  $("sel-ct").addEventListener("click", () => {
+    const ids = [...ui.selected].slice(0, C.contracts.max_items);
+    ui.ct.items = ids;
+    ui.select = false;
+    ui.selected.clear();
+    switchTab("contract");
+  });
+  $("sel-up").addEventListener("click", () => {
+    Object.assign(ui.up, { items: [...ui.selected].slice(0, C.upgrader.max_items), coins: 0, target: null, side: "target" });
+    ui.select = false;
+    ui.selected.clear();
+    switchTab("upgrade");
+    loadTargets();
+  });
+
   // ---------- колёса, задания, розыгрыш ----------
   function wheelSvg(sectors) {
     const n = sectors.length, R = 120, cx = 130, cy = 130;
@@ -571,22 +858,22 @@
       const am = (a0 + a1) / 2, lx = cx + R * 0.62 * Math.cos(am), ly = cy + R * 0.62 * Math.sin(am);
       const rare = s.p <= 2;
       return `<path d="M${cx},${cy} L${x0},${y0} A${R},${R} 0 0 1 ${x1},${y1} Z" fill="${rare ? "var(--accent)" : i % 2 ? "var(--bg)" : "var(--surface-2)"}" stroke="var(--line)"/>
-        <text x="${lx}" y="${ly}" fill="var(--fg)" font-size="12" font-weight="700" text-anchor="middle" dominant-baseline="middle" transform="rotate(${(am * 180) / Math.PI + 90} ${lx} ${ly})">${esc(s.label)}</text>`;
+        <text x="${lx}" y="${ly}" fill="var(--fg)" font-size="11" font-weight="700" text-anchor="middle" dominant-baseline="middle" transform="rotate(${(am * 180) / Math.PI + 90} ${lx} ${ly})">${esc(s.label)}</text>`;
     }).join("");
   }
 
   function openWheel(kind) {
-    kind = kind === "weekly" ? "weekly" : (M.today.wheel_daily || !M.today.wheel_weekly_unlocked ? "daily" : "weekly");
+    kind = kind === "weekly" ? "weekly" : kind === "daily" ? "daily" : (M.today.wheel_daily || !M.today.wheel_weekly_unlocked ? "daily" : "weekly");
     const sectors = C.wheel[kind];
     const available = kind === "daily" ? M.today.wheel_daily : M.today.wheel_weekly_unlocked;
     const prize = (s) => (s.cases ? ` · ${money(Math.round(C.unit_cents * s.cases))}` : "");
     const body = openSheet(`
       <div class="seg small"><button type="button" data-k="daily" class="${kind === "daily" ? "on" : ""}">Колесо дня</button>
         <button type="button" data-k="weekly" class="${kind === "weekly" ? "on" : ""}">Недельное</button></div>
-      <p class="lead">${kind === "daily" ? "Один бесплатный поворот в сутки, пустых секторов нет." : `Открывается, если задания выполнены в ${C.wheel.weekly_unlock_days} днях из 7. Сейчас: ${M.today.quest_days_week} из 7.`} Суммы в ценах самого дешёвого кейса (${money(C.unit_cents)}).</p>
+      <p class="lead">${kind === "daily" ? "Один бесплатный поворот в сутки, пустых секторов нет." : `Открывается, если задания выполнены в ${C.wheel.weekly_unlock_days} днях из 7. Сейчас: ${M.today.quest_days_week} из 7.`}</p>
       <div class="wheel-wrap"><span class="pin"></span><svg viewBox="0 0 260 260"><g id="wheel-g">${wheelSvg(sectors)}</g><circle cx="130" cy="130" r="16" fill="var(--surface)" stroke="var(--line)"/></svg></div>
-      <table class="odds-table"><tr><th>Приз</th><th>Шанс</th></tr>${sectors.map((s) => `<tr><td>${esc(s.label)}${prize(s)}</td><td>${s.p}%</td></tr>`).join("")}</table>
-      <button type="button" class="btn-spin small" id="w-go" ${available ? "" : "disabled"}><span>${available ? "КРУТИТЬ КОЛЕСО" : kind === "daily" ? "ЗАВТРА СНОВА" : "ПОКА ЗАКРЫТО"}</span></button>`);
+      <button type="button" class="btn-spin small" id="w-go" ${available ? "" : "disabled"}><span>${available ? "КРУТИТЬ" : kind === "daily" ? "ЗАВТРА СНОВА" : "ПОКА ЗАКРЫТО"}</span></button>
+      <table class="odds-table"><tr><th>Приз</th><th>Шанс</th></tr>${sectors.map((s) => `<tr><td>${esc(s.label)}${prize(s)}</td><td>${s.p}%</td></tr>`).join("")}</table>`);
     body.querySelectorAll("[data-k]").forEach((b) => (b.onclick = () => openWheel(b.dataset.k)));
     body.querySelector("#w-go").onclick = async (e) => {
       e.currentTarget.disabled = true;
@@ -610,15 +897,15 @@
   async function openTasks() {
     try {
       const q = await api.get("/quests");
-      const row = (t, weekly) => `<div class="task"><b>${esc(t.title)}</b>
+      const row = (t) => `<div class="task"><b>${esc(t.title)}</b>
         <small>${t.progress}/${t.target} · ${money(t.reward_cents)}${t.tickets ? ` + ${t.tickets} билет` : ""}${t.cosmetic ? " + рамка" : ""}</small>
         <div class="bar"><i style="width:${(t.progress / t.target) * 100}%"></i></div>
         <button type="button" data-q="${t.code}" ${t.claimed || t.progress < t.target ? "disabled" : ""}>${t.claimed ? "Получено" : "Забрать"}</button></div>`;
       const body = openSheet(`
         <h2>Задания</h2>
-        <p class="lead">Дневные обновляются в полночь по Москве. Каждое даёт билет в розыгрыш. Задания в ${q.weekly_wheel_unlock_days} днях из 7 открывают недельное колесо: сейчас ${q.week_days} из 7.</p>
-        <h3 class="h-sub">Сегодня</h3>${q.daily.map((t) => row(t)).join("")}
-        <h3 class="h-sub">Неделя</h3>${q.weekly.map((t) => row(t, true)).join("")}`);
+        <p class="lead">Дневные обновляются в полночь по Москве, каждое даёт билет в розыгрыш. Задания в ${q.weekly_wheel_unlock_days} днях из 7 открывают недельное колесо: сейчас ${q.week_days} из 7.</p>
+        <h3 class="h-sub">Сегодня</h3>${q.daily.map(row).join("")}
+        <h3 class="h-sub">Неделя</h3>${q.weekly.map(row).join("")}`);
       body.addEventListener("click", async (e) => {
         const b = e.target.closest("[data-q]");
         if (!b) return;
@@ -639,105 +926,70 @@
       const prev = r.previous;
       openSheet(`
         <h2>Розыгрыш</h2>
-        <p class="lead">Участие бесплатное: билеты только за задания, купить их нельзя. Каждый день в ${r.draw_hour_msk}:00 по Москве 10 призов среди всех, у кого есть билеты.</p>
+        <p class="lead">Участие бесплатное: билеты только за задания, купить их нельзя. Каждый день в ${r.draw_hour_msk}:00 по Москве призы среди всех, у кого есть билеты.</p>
         <div class="stats"><div><small>Мои билеты</small><b>${r.my_tickets}</b></div><div><small>Всего билетов</small><b>${r.total_tickets}</b></div></div>
         <table class="odds-table"><tr><th>Приз</th><th>Сколько</th></tr>${r.prizes.map((p) => `<tr><td>${esc(p.label)}</td><td>${p.count}</td></tr>`).join("")}</table>
-        <p class="note">Хеш зерна розыгрыша опубликован заранее:<br><span class="mono">${esc(r.seed_hash)}</span><br>После розыгрыша зерно раскрывается, победителей можно пересчитать.</p>
+        <p class="note">Хеш зерна опубликован заранее:<br><span class="mono">${esc(r.seed_hash)}</span><br>После розыгрыша зерно раскрывается, победителей можно пересчитать.</p>
         ${prev ? `<h3 class="h-sub">Вчера</h3><p class="note">Зерно: <span class="mono">${esc(prev.seed)}</span></p>
           <ol class="board">${prev.winners.map((w) => `<li><span>${esc(w.name)}</span><b>${esc(w.prize)}</b></li>`).join("") || "<li>Билетов не было</li>"}</ol>` : ""}`);
     } catch (err) { handleError(err); }
   }
 
-  // ---------- КОЛЛЕКЦИЯ ----------
-  function renderCollection() {
-    if (!INV) return;
-    const s = INV.summary;
-    $("col-slots").textContent = `${s.used} / ${s.total}`;
-    $("col-value").textContent = money(s.value_cents);
-    $("col-week").textContent = s.week_change_cents ? `${s.week_change_cents > 0 ? "+" : ""}${money(s.week_change_cents)} за неделю` : "";
-    $("col-week").className = s.week_change_cents > 0 ? "up" : s.week_change_cents < 0 ? "down" : "";
-    const ob = $("overflow-banner");
-    ob.hidden = !s.overflow;
-    ob.textContent = s.overflow ? `Переполнение: ${s.overflow} из ${C.inventory.overflow_slots}. Освободи место за 48 часов, иначе эти предметы продадутся системе по 60%.` : "";
-    const items = INV.items;
-    const chips = [{ id: "all", label: "Все" }]
-      .concat(CASE_TIERS.filter((t) => items.some((i) => i.tier === t)).map((t) => ({ id: t, label: tier(t).name, icon: tier(t).icon, tier: t })))
-      .concat(items.some((i) => i.stattrak) ? [{ id: "st", label: "StatTrak™" }] : [])
-      .concat(items.some((i) => i.locked) ? [{ id: "locked", label: "🔒 Под замком" }] : [])
-      .concat(items.some((i) => i.state === "market") ? [{ id: "market", label: "⇅ На рынке" }] : [])
-      .concat(items.some((i) => i.overflow_until) ? [{ id: "overflow", label: "⚠ Переполнение" }] : []);
-    $("col-chips").innerHTML = chips.map((c) => `<button type="button" class="chip ${ui.colFilter === c.id ? "on" : ""}" data-f="${c.id}" ${c.tier ? `style="${tc(c.tier)}"` : ""}>${c.icon ? `<i>${c.icon}</i>` : ""}${esc(c.label)}</button>`).join("");
-    let list = items.filter((i) => ui.colFilter === "all" || i.tier === ui.colFilter || (ui.colFilter === "st" && i.stattrak)
-      || (ui.colFilter === "locked" && i.locked) || (ui.colFilter === "market" && i.state === "market") || (ui.colFilter === "overflow" && i.overflow_until));
-    const q = ui.colSearch.trim().toLowerCase();
-    if (q) list = list.filter((i) => i.name.toLowerCase().includes(q));
-    const growth = (i) => (i.price_cents - i.drop_price_cents) / (i.drop_price_cents || 1);
-    const sorters = { new: (a, b) => b.id - a.id, price: (a, b) => b.price_cents - a.price_cents, tier: (a, b) => rank(b.tier) - rank(a.tier) || b.price_cents - a.price_cents, growth: (a, b) => growth(b) - growth(a) };
-    list.sort(sorters[ui.colSort]);
-    $("col-grid").innerHTML = list.map((i) => tileHtml(i)).join("");
-    $("col-empty").hidden = items.length > 0;
+  // ---------- ЕЩЁ: профиль и плитки ----------
+  const MENU = [
+    ["market", "⇅", "Рынок", "лоты игроков"],
+    ["trades", "⇄", "Обмены", "с друзьями"],
+    ["duels", "⚔", "Дуэли", "без ставок"],
+    ["friends", "☺", "Друзья", "награды за друзей"],
+    ["rating", "★", "Рейтинг", "друзья и все"],
+    ["wheel", "◎", "Колесо", "раз в день"],
+    ["tasks", "✓", "Задания", "монеты и билеты"],
+    ["raffle", "✦", "Розыгрыш", "каждый вечер"],
+    ["shop", "⭐", "Магазин", "удача ×2…×10, VIP"],
+    ["fair", "⚖", "Честная игра", "проверь бросок"],
+    ["odds", "%", "Шансы", "кейсы и износ"],
+    ["cosmetics", "◇", "Рамки", "косметика"],
+    ["country", "⌖", "Страна", "валюта показа"],
+    ["settings", "⚙", "Настройки", "анимации"],
+    ["terms", "§", "Условия", "что можно"],
+  ];
+
+  function renderMore() {
+    $("more-home").hidden = false;
+    $("more-page").hidden = true;
+    const u = M.user;
+    const xpPct = Math.min(100, ((u.xp - u.xp_prev) / Math.max(1, u.xp_next - u.xp_prev)) * 100);
+    const show = (M.showcase || []).map(findItem).filter(Boolean);
+    $("profile").innerHTML = `
+      <div class="pc-head ${u.frame ? "framed" : ""}" style="${u.frame ? tc(C.cosmetics[u.frame].tier) : ""}">
+        <div><b>${esc(u.name || "Игрок")}</b><small>ID ${u.id}${u.vip_until ? " · VIP" : ""} · ${esc(C.currency.countries[M.country].name)}</small></div>
+        <div class="lvl"><b>Ур. ${u.level}</b><div class="bar"><i style="width:${xpPct}%"></i></div><small>${u.xp} / ${u.xp_next} XP</small></div>
+      </div>
+      <div class="pc-stats"><div><small>Кейсов</small><b>${M.total_spins}</b></div><div><small>Предметов</small><b>${INV ? INV.summary.used : 0}</b></div><div><small>Инвентарь</small><b>${INV ? money(INV.summary.value_cents) : "—"}</b></div></div>
+      ${show.length ? `<div class="showcase">${show.map((i) => tileHtml(i)).join("")}</div>` : ""}`;
+    $("more-menu").innerHTML = MENU.map(([id, ico, t, s]) => `<button type="button" data-open="${id}"><i>${ico}</i><b>${t}</b><small>${s}</small></button>`).join("");
+  }
+  $("profile").addEventListener("click", (e) => { const t = e.target.closest("[data-item]"); if (t) showItem(findItem(+t.dataset.item)); });
+  $("more-menu").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-open]");
+    if (!b) return;
+    haptic("tick");
+    const pages = { market: renderMarket, trades: renderTrades, duels: renderDuels, friends: renderFriends, rating: renderRating };
+    if (pages[b.dataset.open]) { ui.page = b.dataset.open; pages[ui.page](); $("screens").scrollTop = 0; return; }
+    ({ wheel: () => openWheel(), tasks: openTasks, raffle: openRaffle, shop: openShop, fair: openFair, odds: () => openOdds(ui.caseId || C.free_case_id),
+      cosmetics: openCosmetics, country: openCountry, settings: openSettings, terms: openTerms })[b.dataset.open]();
+  });
+
+  function page(title, html) {
+    $("more-home").hidden = true;
+    const p = $("more-page");
+    p.hidden = false;
+    p.innerHTML = `<button type="button" class="back" id="pg-back">← Ещё</button><h1 class="pg-title">${esc(title)}</h1>${html}`;
+    p.querySelector("#pg-back").onclick = () => { ui.page = null; renderMore(); };
+    return p;
   }
 
-  $("col-chips").addEventListener("click", (e) => { const b = e.target.closest("[data-f]"); if (b) { ui.colFilter = b.dataset.f; renderCollection(); } });
-  $("col-search").addEventListener("input", (e) => { ui.colSearch = e.target.value; renderCollection(); });
-  $("col-sort").addEventListener("change", (e) => { ui.colSort = e.target.value; renderCollection(); });
-  $("col-grid").addEventListener("click", (e) => { const t = e.target.closest("[data-item]"); if (t) showItem(findItem(+t.dataset.item)); });
-  $("sell-dupes").addEventListener("click", async () => {
-    try {
-      const q = await api.post("/items/sell-duplicates/quote");
-      if (!q.item_ids.length) return toast("Дублей нет: у каждого вида по одному экземпляру");
-      sellItems(q.item_ids, false);
-    } catch (err) { handleError(err); }
-  });
-  $("sell-cheap").addEventListener("click", () => {
-    const body = openSheet(`<h2>Продать дешевле…</h2>
-      <p class="lead">Продадим всё, что дешевле этой суммы. Легендарные и выше и предметы под замком не трогаем.</p>
-      <label class="lead" for="cheap-v">Сумма, ${esc(M.currency.symbol)}</label>
-      <input class="field" id="cheap-v" type="number" min="0" step="any" inputmode="decimal" value="${(50 * M.currency.rate).toFixed(M.currency.decimals)}">
-      <button type="button" class="btn-spin small" id="cheap-go"><span>ПОКАЗАТЬ СУММУ</span></button>`);
-    body.querySelector("#cheap-go").onclick = async () => {
-      const v = parseFloat(String(body.querySelector("#cheap-v").value).replace(",", ".")) || 0;
-      const cents = Math.round((v / M.currency.rate) * 100);
-      try {
-        const q = await api.post("/items/sell-cheaper/quote", { max_cents: cents });
-        if (!q.item_ids.length) return toast("Таких предметов нет");
-        sellItems(q.item_ids, false);
-      } catch (err) { handleError(err); }
-    };
-  });
-
-  // ---------- РЫНОК ----------
-  function renderMarket() {
-    document.querySelector('#market-seg [data-sub="upgrade"]').hidden = settings.noUpgrader;
-    if (settings.noUpgrader && ui.market === "upgrade") ui.market = "lots";
-    document.querySelectorAll("#market-seg button").forEach((b) => b.classList.toggle("on", b.dataset.sub === ui.market));
-    ["lots", "upgrade", "contract", "trades"].forEach((s) => ($("sub-" + s).hidden = s !== ui.market));
-    if (ui.market === "lots") loadLots();
-    if (ui.market === "upgrade") renderUpgrade();
-    if (ui.market === "contract") renderContract();
-    if (ui.market === "trades") loadTrades();
-  }
-  $("market-seg").addEventListener("click", (e) => {
-    const b = e.target.closest("[data-sub]");
-    if (!b) return;
-    ui.market = b.dataset.sub;
-    renderMarket();
-    if (ui.market === "upgrade" && !ui.up.targets.length) loadTargets();
-  });
-  $("lots-seg").addEventListener("click", (e) => {
-    const b = e.target.closest("[data-view]");
-    if (!b) return;
-    ui.lotsView = b.dataset.view;
-    document.querySelectorAll("#lots-seg button").forEach((x) => x.classList.toggle("on", x === b));
-    loadLots();
-  });
-  $("lots-chips").addEventListener("click", (e) => {
-    const b = e.target.closest("[data-t]");
-    if (!b) return;
-    ui.lotsTier = b.dataset.t === "all" ? null : b.dataset.t;
-    loadLots();
-  });
-
+  // ---------- рынок ----------
   function lotRow(l, action) {
     const it = l.item;
     return `<div class="lot" style="${tc(it.tier)}">
@@ -748,44 +1000,47 @@
       <div class="lot-side"><em>${money(l.price_cents)}</em>${action}</div></div>`;
   }
 
-  async function loadLots() {
-    $("lots-chips").hidden = ui.lotsView !== "all";
-    $("lots-chips").innerHTML = [["all", "Все"]].concat(CASE_TIERS.map((t) => [t, tier(t).name])).map(([id, label]) =>
-      `<button type="button" class="chip ${(ui.lotsTier || "all") === id ? "on" : ""}" data-t="${id}" ${id !== "all" ? `style="${tc(id)}"` : ""}>${id !== "all" ? `<i>${tier(id).icon}</i>` : ""}${esc(label)}</button>`).join("");
-    const list = $("lots-list");
+  async function renderMarket() {
+    const views = [["all", "Витрина"], ["mine", "Мои лоты"], ["orders", "Заявки"], ["deals", "Сделки"]];
+    const p = page("Рынок", `
+      <div class="seg small" id="lots-seg">${views.map(([id, l]) => `<button type="button" data-view="${id}" class="${ui.market === id ? "on" : ""}">${l}</button>`).join("")}</div>
+      ${ui.market === "all" ? `<div class="chips" id="lots-chips">${[["all", "Все"]].concat(DROP_TIERS.map((t) => [t, tier(t).name])).map(([id, label]) =>
+        `<button type="button" class="chip ${(ui.lotsTier || "all") === id ? "on" : ""}" data-t="${id}" ${id !== "all" ? `style="${tc(id)}"` : ""}>${esc(label)}</button>`).join("")}</div>` : ""}
+      <div id="lots-list" class="lots"><p class="empty">Загрузка…</p></div>
+      <p class="note">Цена лота от 50% до 150% справочной, комиссия 10% (у VIP 5%) уходит из игры. Купленный предмет 24 часа нельзя перепродать. Выставить предмет — из его карточки.</p>`);
+    p.querySelector("#lots-seg").onclick = (e) => { const b = e.target.closest("[data-view]"); if (b) { ui.market = b.dataset.view; renderMarket(); } };
+    const chips = p.querySelector("#lots-chips");
+    if (chips) chips.onclick = (e) => { const b = e.target.closest("[data-t]"); if (b) { ui.lotsTier = b.dataset.t === "all" ? null : b.dataset.t; renderMarket(); } };
+    const list = p.querySelector("#lots-list");
     try {
-      if (ui.lotsView === "orders") {
+      if (ui.market === "orders") {
         const { orders } = await api.get("/market/orders");
         list.innerHTML = orders.length ? orders.map((o) => `<div class="lot" style="${tc(o.tier)}"><img src="${esc(o.image_url)}" alt="">
           <div class="lot-main"><b>${o.stattrak ? "ST™ " : ""}${esc(o.name)}</b><small>${o.wear || ""} · ${o.status === "active" ? "ждёт продавца" : o.status === "filled" ? "исполнена" : "отменена"}</small></div>
           <div class="lot-side"><em>до ${money(o.max_price_cents)}</em>${o.status === "active" ? `<button type="button" class="mini" data-cancel-order="${o.id}">Снять</button>` : ""}</div></div>`).join("")
-          : '<p class="empty">Заявок нет. Открой лот на витрине и нажми «Хочу дешевле», монеты заблокируются до покупки.</p>';
-        return;
-      }
-      if (ui.lotsView === "deals") {
+          : '<p class="empty">Заявок нет. Открой лот на витрине и нажми «Хочу дешевле».</p>';
+      } else if (ui.market === "deals") {
         const { deals } = await api.get("/market/deals");
         list.innerHTML = deals.length ? deals.map((d) => lotRow(d, `<small class="${d.side === "sell" ? "up" : ""}">${d.side === "sell" ? "продал" : "купил"} ${dayStr(d.sold_at)}</small>`)).join("")
           : '<p class="empty">Сделок пока не было.</p>';
-        return;
+      } else {
+        const mine = ui.market === "mine";
+        const { lots } = await api.get("/market/lots" + (mine ? "?mine=1" : `?sort=new${ui.lotsTier ? "&tier=" + ui.lotsTier : ""}`));
+        list.innerHTML = lots.length ? lots.map((l) => lotRow(l, mine ? `<button type="button" class="mini" data-cancel="${l.id}">Снять</button>`
+          : l.seller_id === M.user.id ? "<small>твой лот</small>" : `<button type="button" class="mini primary" data-lot="${l.id}">Купить</button>`)).join("")
+          : `<p class="empty">${mine ? "Лотов нет. Выставить предмет можно из его карточки в Инвентаре." : "На витрине пока пусто."}</p>`;
+        list.querySelectorAll("[data-lot]").forEach((b) => (b.onclick = () => openLot(lots.find((l) => l.id === +b.dataset.lot))));
       }
-      const q = ui.lotsView === "mine" ? "?mine=1" : `?sort=new${ui.lotsTier ? "&tier=" + ui.lotsTier : ""}`;
-      const { lots } = await api.get("/market/lots" + q);
-      const mine = ui.lotsView === "mine";
-      list.innerHTML = lots.length ? lots.map((l) => lotRow(l, mine ? `<button type="button" class="mini" data-cancel="${l.id}">Снять</button>`
-        : l.seller_id === M.user.id ? "<small>твой лот</small>" : `<button type="button" class="mini primary" data-lot="${l.id}">Купить</button>`)).join("")
-        : `<p class="empty">${mine ? "Лотов нет. Выставить предмет можно из его карточки в коллекции." : "На витрине пока пусто."}</p>`;
-      list.querySelectorAll("[data-lot]").forEach((b) => (b.onclick = () => openLot(lots.find((l) => l.id === +b.dataset.lot))));
     } catch (err) { handleError(err); }
+    list.addEventListener("click", async (e) => {
+      const c = e.target.closest("[data-cancel]");
+      const o = e.target.closest("[data-cancel-order]");
+      try {
+        if (c) { await api.del(`/market/lots/${c.dataset.cancel}`); toast("Лот снят"); await refresh(); renderMarket(); }
+        if (o) { await api.del(`/market/orders/${o.dataset.cancelOrder}`); toast("Заявка снята, монеты вернулись"); await refresh(false); renderMarket(); }
+      } catch (err) { handleError(err); }
+    });
   }
-
-  $("lots-list").addEventListener("click", async (e) => {
-    const c = e.target.closest("[data-cancel]");
-    const o = e.target.closest("[data-cancel-order]");
-    try {
-      if (c) { await api.del(`/market/lots/${c.dataset.cancel}`); toast("Лот снят"); await refresh(); loadLots(); }
-      if (o) { await api.del(`/market/orders/${o.dataset.cancelOrder}`); toast("Заявка снята, монеты вернулись"); await refresh(false); loadLots(); }
-    } catch (err) { handleError(err); }
-  });
 
   function openLot(l) {
     const it = l.item;
@@ -795,7 +1050,7 @@
       <div class="item-name"><b>${it.stattrak ? "StatTrak™ " : ""}${itemTitle(it)}</b><span>${it.wear ? WEAR[it.wear] : ""}${it.float != null ? " · " + it.float.toFixed(4) : ""}</span></div>
       <div class="stats"><div><small>Цена лота</small><b>${money(l.price_cents)}</b></div><div><small>Справочная</small><b>${money(it.price_cents)}</b></div></div>
       <div class="actions"><button type="button" class="primary" id="lot-buy">Купить за ${money(l.price_cents)}</button><button type="button" id="lot-order">Хочу дешевле</button></div>
-      <p class="note">После покупки предмет 24 часа на удержании: перепродать или обменять его можно будет завтра.</p>`);
+      <p class="note">После покупки предмет 24 часа на удержании.</p>`);
     body.querySelector("#lot-buy").onclick = async () => {
       const ok = await confirmSheet({ title: "Купить?", text: `${itemTitle(it)} за <b>${money(l.price_cents)}</b>.`, ok: "Купить" });
       if (!ok) return;
@@ -803,19 +1058,18 @@
         await api.post(`/market/lots/${l.id}/buy`);
         haptic("success");
         await refresh();
-        toast("Куплено: предмет в коллекции");
-        loadLots();
+        toast("Куплено: предмет в Инвентаре");
+        if (ui.page === "market") renderMarket();
       } catch (err) { handleError(err); }
     };
     body.querySelector("#lot-order").onclick = () => openOrder(it, l.price_cents);
   }
 
   function priceInput(label, cents, lo, hi) {
-    const val = ((cents / 100) * M.currency.rate).toFixed(M.currency.decimals);
     return `<label class="lead" for="price-v">${esc(label)}, ${esc(M.currency.symbol)} (от ${money(lo)} до ${money(hi)})</label>
-      <input class="field" id="price-v" type="number" step="any" inputmode="decimal" value="${val}">`;
+      <input class="field" id="price-v" type="number" step="any" inputmode="decimal" value="${fromCents(cents)}">`;
   }
-  const readPrice = (body) => Math.round(((parseFloat(String(body.querySelector("#price-v").value).replace(",", ".")) || 0) / M.currency.rate) * 100);
+  const readPrice = (body) => toCents(body.querySelector("#price-v").value);
 
   function openOrder(it, lotPrice) {
     const lo = Math.ceil((it.price_cents * C.market.band_pct[0]) / 100), hi = Math.floor((it.price_cents * C.market.band_pct[1]) / 100);
@@ -854,58 +1108,6 @@
     };
   }
 
-  // ---------- апгрейдер ----------
-  function upStake() {
-    ui.up.items = ui.up.items.filter((id) => { const i = findItem(id); return i && !i.locked && i.state === "free"; });
-    const items = ui.up.items.map(findItem);
-    return { items, sum: items.reduce((s, i) => s + i.price_cents, 0) + ui.up.coins };
-  }
-  function upChance(stake, target) {
-    if (!target || target.price_cents <= stake || stake <= 0) return 0;
-    return Math.min(C.upgrader.max_chance_pct / 100, (stake / target.price_cents) * C.upgrader.k * (1 + (M.upgrade_bonus_pct || 0) / 100));
-  }
-
-  function renderUpgrade() {
-    if (!INV) return;
-    const { items, sum } = upStake();
-    const box = $("up-stake-items");
-    box.className = "up-items" + (items.length > 1 ? " many" : "");
-    box.innerHTML = items.length
-      ? items.map((i) => `<img src="${esc(i.image_url)}" alt="">`).join("") + (items.length === 1 ? `<span class="nm">${itemTitle(items[0])}</span>` : "") + (ui.up.coins ? `<span class="nm">+ ${money(ui.up.coins)}</span>` : "")
-      : ui.up.coins ? `<span class="nm">${money(ui.up.coins)} монетами</span>` : '<span class="plus">+</span>';
-    $("up-stake-sum").textContent = money(sum);
-    const t = ui.up.target;
-    $("up-target-items").innerHTML = t ? `<img src="${esc(t.image_url)}" alt=""><span class="nm">${t.stattrak ? "ST™ " : ""}${esc(t.name)}${t.wear ? " · " + t.wear : ""}</span>` : '<span class="plus">?</span>';
-    $("up-target-sum").textContent = t ? money(t.price_cents) : "—";
-    const chance = upChance(sum, t);
-    $("up-chance").textContent = pct(chance, 2);
-    $("up-arc").setAttribute("stroke-dasharray", `${chance * 1000} 1000`);
-    const bonus = M.upgrade_bonus_pct ? ` × ${(1 + M.upgrade_bonus_pct / 100).toFixed(2).replace(".", ",")} бонус` : "";
-    $("up-formula").innerHTML = t ? `<b>${money(sum)}</b> ÷ <b>${money(t.price_cents)}</b> × 0,8${bonus} = <b>${pct(chance, 2)}</b> (потолок ${C.upgrader.max_chance_pct}%)`
-      : "Шанс = ставка ÷ цель × 0,8, не больше 80%. Выбери ставку и цель.";
-    $("up-mults").innerHTML = C.upgrader.multipliers.map((m) => `<button type="button" data-m="${m}" class="${ui.up.mult === m ? "on" : ""}">×${String(m).replace(".", ",")}</button>`).join("");
-    $("up-targets").innerHTML = sum > 0 ? ui.up.targets.map((x, i) => `<button type="button" class="tile ${t && t.catalog_item_id === x.catalog_item_id && t.wear === x.wear && t.stattrak === x.stattrak ? "sel" : ""}" data-t="${i}" style="${tc(x.tier)}">
-        <img src="${esc(x.image_url)}" alt="" loading="lazy"><span class="w">${x.stattrak ? '<span class="st">ST™</span> ' : ""}${x.wear || ""}</span><span class="n">${esc(x.name)}</span><span class="p">${money(x.price_cents)}</span></button>`).join("") : "";
-    $("up-go").disabled = !(chance > 0) || ui.up.spinning || M.upgrades_left <= 0;
-    $("up-note").textContent = `Осталось сегодня: ${M.upgrades_left} из ${C.upgrader.per_day}. При неудаче ставка сгорает, назад приходят запчасти на 10% ставки, а следующий апгрейд получает +3% к шансу.`;
-  }
-
-  async function loadTargets() {
-    const { sum } = upStake();
-    if (sum <= 0) { ui.up.targets = []; renderUpgrade(); return; }
-    try {
-      const res = await api.get(`/upgrades/targets?stake_cents=${sum}&mult=${ui.up.mult}`);
-      ui.up.targets = res.targets;
-      if (!ui.up.target || ui.up.target.price_cents <= sum) ui.up.target = res.targets[0] || null;
-    } catch (err) { handleError(err); }
-    renderUpgrade();
-  }
-
-  $("up-mults").addEventListener("click", (e) => { const b = e.target.closest("[data-m]"); if (!b) return; ui.up.mult = +b.dataset.m; ui.up.target = null; loadTargets(); });
-  $("up-targets").addEventListener("click", (e) => { const b = e.target.closest("[data-t]"); if (!b) return; ui.up.target = ui.up.targets[+b.dataset.t]; haptic("tick"); renderUpgrade(); });
-  $("up-target").addEventListener("click", () => { if (!ui.up.targets.length) loadTargets(); });
-  $("up-stake").addEventListener("click", openStakePicker);
-
   function pickerGrid(items, selected, max, onDone, extra = "") {
     const sel = new Set(selected);
     const body = openSheet(`${extra}
@@ -924,115 +1126,19 @@
     body.querySelector("#pick-ok").onclick = () => onDone([...sel], body);
     return body;
   }
-  const freeItems = () => INV.items.filter((i) => i.state === "free" && !i.locked && !i.frozen).sort((a, b) => b.price_cents - a.price_cents);
-
-  function openStakePicker() {
-    pickerGrid(freeItems(), ui.up.items, C.upgrader.max_items, (ids, body) => {
-      const v = parseFloat(String(body.querySelector("#up-coins").value).replace(",", ".")) || 0;
-      ui.up.coins = Math.max(0, Math.min(Math.round((v / M.currency.rate) * 100), M.balance_cents));
-      ui.up.items = ids;
-      ui.up.target = null;
-      closeSheet();
-      loadTargets();
-    }, `<h2>Ставка</h2><p class="lead">До ${C.upgrader.max_items} предметов и монеты. За раз — не больше половины коллекции и баланса.</p>
-      <label for="up-coins" class="lead">Добавить монет, ${esc(M.currency.symbol)} (баланс ${money(M.balance_cents)})</label>
-      <input class="field" id="up-coins" type="number" min="0" step="any" inputmode="decimal" value="${ui.up.coins ? ((ui.up.coins / 100) * M.currency.rate).toFixed(M.currency.decimals) : ""}" placeholder="0">`);
-  }
-
-  $("up-go").addEventListener("click", async () => {
-    const { sum } = upStake();
-    const t = ui.up.target;
-    if (!t) return;
-    const target = { catalog_item_id: t.catalog_item_id, wear: t.wear, stattrak: t.stattrak };
-    ui.up.spinning = true;
-    renderUpgrade();
-    try {
-      const quote = await api.post("/upgrades/quote", { stake_item_ids: ui.up.items, stake_coins_cents: ui.up.coins, target });
-      if (quote.confirm_required) {
-        const ok = await confirmSheet({ title: "Точно?", text: `Ставка ${money(sum)} сгорит с шансом ${pct(1 - quote.chance_pct / 100, 1)}.`, ok: "Улучшить", pause: C.upgrader.confirm_pause_s });
-        if (!ok) return;
-      }
-      const res = await api.post("/upgrades", { stake_item_ids: ui.up.items, stake_coins_cents: ui.up.coins, target, quote_chance_pct: quote.chance_pct, confirmed: true });
-      await spinNeedle(res.roll / 100);
-      haptic(res.success ? "success" : "error");
-      Object.assign(ui.up, { items: [], coins: 0, target: null, targets: [] });
-      await refresh();
-      if (res.success) showItem(res.item, { fresh: true });
-      else openSheet(`<h2>Не получилось</h2><p>Шанс был ${String(res.chance_pct).replace(".", ",")}%, стрелка остановилась на ${String(res.roll.toFixed(1)).replace(".", ",")}%.</p>
-        <p>Запчасти: <b>+${money(res.parts_cents)}</b>. Следующий апгрейд получит +${res.next_bonus_pct}% к шансу.</p>
-        <div class="actions"><button type="button" class="primary wide" id="up-ok">Понятно</button></div>`).querySelector("#up-ok").onclick = closeSheet;
-    } catch (err) {
-      handleError(err);
-    } finally {
-      ui.up.spinning = false;
-      renderUpgrade();
-    }
-  });
-
-  function spinNeedle(roll) {
-    return new Promise((resolve) => {
-      const n = $("up-needle");
-      n.style.transition = "none";
-      n.style.transform = "rotate(0deg)";
-      requestAnimationFrame(() => requestAnimationFrame(() => {
-        const ms = settings.fast ? 500 : 3600;
-        n.style.transition = `transform ${ms}ms cubic-bezier(.15,.7,.15,1)`;
-        n.style.transform = `rotate(${360 * 4 + roll * 360}deg)`;
-        setTimeout(resolve, ms + 200);
-      }));
-    });
-  }
-
-  // ---------- 5 в 1 ----------
-  function renderContract() {
-    if (!INV) return;
-    const next = C.contracts.next;
-    $("ct-chips").innerHTML = Object.keys(next).map((t) => {
-      const n = INV.items.filter((i) => i.tier === t && i.state === "free" && !i.locked).length;
-      return `<button type="button" class="chip ${ui.ct.tier === t ? "on" : ""}" data-ct="${t}" style="${tc(t)}"><i>${tier(t).icon}</i>${esc(tier(t).name)} · ${n}</button>`;
-    }).join("");
-    const pool = INV.items.filter((i) => i.tier === ui.ct.tier && i.state === "free" && !i.locked);
-    ui.ct.items = ui.ct.items.filter((id) => pool.some((i) => i.id === id));
-    const chosen = ui.ct.items.map((id) => pool.find((i) => i.id === id));
-    $("ct-slots").innerHTML = Array.from({ length: 5 }, (_, k) => chosen[k]
-      ? `<div class="ct-slot" style="border:1px solid var(--t-${ui.ct.tier})"><img src="${esc(chosen[k].image_url)}" alt=""></div>`
-      : '<div class="ct-slot"><span class="plus small">+</span></div>').join("");
-    const sum = chosen.reduce((s, i) => s + i.price_cents, 0);
-    const nt = tier(next[ui.ct.tier]);
-    const ok = rank(ui.ct.tier) <= rank(C.contracts.guaranteed_up_to) ? 1 : C.contracts.success_pct / 100;
-    $("ct-info").innerHTML = `${esc(tier(ui.ct.tier).name)} ×5 → <b style="color:var(--t-${next[ui.ct.tier]})">${nt.icon} ${esc(nt.name)}</b> · успех <b>${pct(ok, 0)}</b>${ok < 1 ? ", иначе предмет той же ступени" : ""} · вклад ${money(sum)}`;
-    $("ct-grid").innerHTML = pool.map((i) => tileHtml(i, ui.ct.items.includes(i.id) ? "sel" : "")).join("");
-    $("ct-go").disabled = chosen.length !== 5;
-  }
-  $("ct-chips").addEventListener("click", (e) => { const b = e.target.closest("[data-ct]"); if (!b) return; ui.ct.tier = b.dataset.ct; ui.ct.items = []; renderContract(); });
-  $("ct-grid").addEventListener("click", (e) => {
-    const t = e.target.closest("[data-item]");
-    if (!t) return;
-    const id = +t.dataset.item;
-    const i = ui.ct.items.indexOf(id);
-    if (i >= 0) ui.ct.items.splice(i, 1);
-    else if (ui.ct.items.length < 5) ui.ct.items.push(id);
-    haptic("tick");
-    renderContract();
-  });
-  $("ct-go").addEventListener("click", async () => {
-    try {
-      const res = await withConfirm((c) => api.post("/contracts", { item_ids: ui.ct.items, confirmed: c }), "Собрать 5 в 1?", "Собрать");
-      if (!res) return;
-      haptic(res.success ? "success" : "warning");
-      ui.ct.items = [];
-      await refresh();
-      showItem(res.item, { fresh: true });
-      if (!res.success) toast("Ступень не поднялась, но предмет твой");
-    } catch (err) { handleError(err); }
-  });
+  const freeItems = () => INV.items.filter(usable).sort((a, b) => b.price_cents - a.price_cents);
 
   // ---------- обмены ----------
-  async function loadTrades() {
+  async function renderTrades() {
+    const p = page("Обмены", `<button class="btn-ghost wide" id="trade-new" type="button">Предложить обмен</button>
+      <div id="trades-list" class="lots"><p class="empty">Загрузка…</p></div>
+      <p class="note">Обмены открываются через 24 часа после первого входа. Разница в цене не больше 50%, с одним игроком не больше 3 обменов в неделю.</p>`);
+    p.querySelector("#trade-new").onclick = newTrade;
+    const list = p.querySelector("#trades-list");
     try {
       const { trades } = await api.get("/trades");
       const mini = (items) => items.map((i) => `<img src="${esc(i.image_url)}" alt="" title="${esc(i.name)}">`).join("");
-      $("trades-list").innerHTML = trades.length ? trades.map((t) => `
+      list.innerHTML = trades.length ? trades.map((t) => `
         <div class="trade">
           <div class="trade-h"><b>${t.incoming ? esc(t.from_name) + " предлагает" : "Ты → " + esc(t.to_name)}</b><small>${{ pending: "ждёт ответа", accepted: "принят", declined: "отклонён", cancelled: "отменён", expired: "истёк" }[t.status]}</small></div>
           <div class="trade-sides"><div><small>${t.incoming ? "Отдаёт" : "Отдаёшь"} · ${money(t.value_from_cents)}</small><div class="mini-items">${mini(t.give)}</div></div>
@@ -1041,18 +1147,19 @@
             : `<div class="actions"><button type="button" class="wide" data-tr="${t.id}" data-a="cancel">Отменить</button></div>`) : ""}
         </div>`).join("") : '<p class="empty">Обменов пока не было.</p>';
     } catch (err) { handleError(err); }
+    list.addEventListener("click", async (e) => {
+      const b = e.target.closest("[data-tr]");
+      if (!b) return;
+      if (b.dataset.a === "accept" && !(await confirmSheet({ title: "Принять обмен?", text: "Предметы сразу поменяются владельцами и 24 часа будут на удержании.", ok: "Принять" }))) return;
+      try {
+        await api.post(`/trades/${b.dataset.tr}/${b.dataset.a}`);
+        await refresh();
+        renderTrades();
+      } catch (err) { handleError(err); }
+    });
   }
-  $("trades-list").addEventListener("click", async (e) => {
-    const b = e.target.closest("[data-tr]");
-    if (!b) return;
-    if (b.dataset.a === "accept" && !(await confirmSheet({ title: "Принять обмен?", text: "Предметы сразу поменяются владельцами и 24 часа будут на удержании.", ok: "Принять" }))) return;
-    try {
-      await api.post(`/trades/${b.dataset.tr}/${b.dataset.a}`);
-      await refresh();
-      loadTrades();
-    } catch (err) { handleError(err); }
-  });
-  $("trade-new").addEventListener("click", async () => {
+
+  async function newTrade() {
     let friends = [];
     try { friends = (await api.get("/friends")).invited; } catch (e) { /* без друзей */ }
     const body = openSheet(`<h2>Новый обмен</h2>
@@ -1075,119 +1182,103 @@
               closeSheet();
               await refresh();
               toast("Предложение отправлено");
-              loadTrades();
+              if (ui.page === "trades") renderTrades();
             } catch (err) { handleError(err); }
           }, `<h2>Что просишь у ${esc(other.name || "игрока")}</h2><p class="lead">Можно ничего не просить: тогда это подарок.</p>`);
-        }, `<h2>Что отдаёшь</h2>`);
+        }, "<h2>Что отдаёшь</h2>");
       } catch (err) { handleError(err); }
     };
-  });
+  }
 
-  // ---------- ДРУЗЬЯ ----------
+  // ---------- друзья, рейтинг, дуэли ----------
   async function renderFriends() {
-    document.querySelectorAll("#friends-seg button").forEach((b) => b.classList.toggle("on", b.dataset.sub === ui.friends));
-    ["invite", "rating", "duels"].forEach((s) => ($("sub-" + s).hidden = s !== ui.friends));
+    const p = page("Друзья", `<div class="panel"><p id="ref-text">Загрузка…</p><div class="ref-steps" id="ref-steps"></div>
+      <button class="btn-spin small" id="invite-btn" type="button"><span>ПОЗВАТЬ ДРУГА</span></button></div><div id="friends-list" class="lots"></div>`);
+    p.querySelector("#invite-btn").onclick = () => {
+      const link = M.app_link || M.invite_link || "";
+      const url = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent("Открывай со мной кейсы CS2 в Telegram. Тебе 3 бесплатных спина!")}`;
+      const t = api.tg();
+      if (t && t.openTelegramLink && !window.SKINS_DEMO) t.openTelegramLink(url);
+      else toast("В Telegram откроется выбор чата со ссылкой-приглашением");
+    };
     try {
-      if (ui.friends === "invite") {
-        const f = await api.get("/friends");
-        $("ref-text").textContent = `Когда друг откроет ${f.qualify_spins} кейсов, он засчитается. Друзей в игре: ${f.qualified}.`;
-        $("ref-steps").innerHTML = f.tiers.map((t) => `<div class="${t.granted ? "done" : ""}"><b>${t.friends}</b><small>${t.spins ? t.spins + " спина" : ""}${t.cases ? money(Math.round(C.unit_cents * t.cases)) : ""}${t.cosmetic ? (t.spins || t.cases ? " + " : "") + C.cosmetics[t.cosmetic].title.toLowerCase() : ""}</small></div>`).join("");
-        $("friends-list").innerHTML = f.invited.map((x) => `<div class="lot"><div class="lot-main"><b>${esc(x.name)}</b><small>${x.qualified ? "в игре" : `открыл ${x.spins} из ${f.qualify_spins}`}</small></div></div>`).join("");
-      }
-      if (ui.friends === "rating") {
-        const r = await api.get(`/leaderboard?board=${ui.board}&scope=${ui.scope}`);
-        const fmt = (v) => (ui.board === "level" ? `${v} XP` : ui.board === "collection" ? `${v} видов` : money(v));
-        $("board").innerHTML = r.rows.map((x) => `<li class="${x.me ? "me" : ""}"><span>${x.place}. ${esc(x.name)} <small>ур. ${x.level}</small></span><b>${fmt(x.value)}</b></li>`).join("")
-          || '<li>Пока пусто. Позови друзей, чтобы было с кем сравниться.</li>';
-      }
-      if (ui.friends === "duels") {
-        const d = await api.get("/duels");
-        $("duels-list").innerHTML = (d.duels.length ? d.duels.map((x) => {
-          const mine = x.p1 === M.user.id;
-          const status = x.status === "open" ? (mine ? "ждёт соперника" : "можно принять") : x.status === "done" ? (x.winner === M.user.id ? "победа" : "поражение") : "закрыта";
-          return `<div class="trade"><div class="trade-h"><b>${esc(x.p1_name)}${x.p2 ? " vs " + esc(x.p2_name) : ""}</b><small class="${status === "победа" ? "up" : ""}">${status}</small></div>
-            <div class="mini-items">${x.p1_items.map((i) => `<img src="${esc(i.image_url)}" alt="">`).join("")}</div>
-            ${x.status === "done" ? `<small class="note">Сила: ${money(x.p1_power)} против ${money(x.p2_power)}</small>` : ""}
-            ${x.status === "open" ? `<div class="actions"><button type="button" class="${mine ? "wide" : "primary wide"}" data-duel="${x.id}" data-a="${mine ? "cancel" : "join"}">${mine ? "Отменить" : "Принять дуэль"}</button></div>` : ""}</div>`;
-        }).join("") : "") + `<p class="note">Сегодня осталось дуэлей: ${d.left_today}.</p>`;
-      }
+      const f = await api.get("/friends");
+      p.querySelector("#ref-text").textContent = `Когда друг откроет ${f.qualify_spins} кейсов, он засчитается. Друзей в игре: ${f.qualified}.`;
+      p.querySelector("#ref-steps").innerHTML = f.tiers.map((t) => `<div class="${t.granted ? "done" : ""}"><b>${t.friends}</b><small>${t.spins ? t.spins + " спина" : ""}${t.cases ? money(Math.round(C.unit_cents * t.cases)) : ""}${t.cosmetic ? (t.spins || t.cases ? " + " : "") + C.cosmetics[t.cosmetic].title.toLowerCase() : ""}</small></div>`).join("");
+      p.querySelector("#friends-list").innerHTML = f.invited.map((x) => `<div class="lot"><div class="lot-main"><b>${esc(x.name)}</b><small>${x.qualified ? "в игре" : `открыл ${x.spins} из ${f.qualify_spins}`}</small></div></div>`).join("");
     } catch (err) { handleError(err); }
   }
-  $("friends-seg").addEventListener("click", (e) => { const b = e.target.closest("[data-sub]"); if (b) { ui.friends = b.dataset.sub; renderFriends(); } });
-  $("board-seg").addEventListener("click", (e) => { const b = e.target.closest("[data-board]"); if (!b) return; ui.board = b.dataset.board; document.querySelectorAll("#board-seg button").forEach((x) => x.classList.toggle("on", x === b)); renderFriends(); });
-  $("scope-seg").addEventListener("click", (e) => { const b = e.target.closest("[data-scope]"); if (!b) return; ui.scope = b.dataset.scope; document.querySelectorAll("#scope-seg button").forEach((x) => x.classList.toggle("on", x === b)); renderFriends(); });
-  $("invite-btn").addEventListener("click", () => {
-    const link = M.app_link || M.invite_link || "";
-    const url = `https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent("Открывай со мной настоящие кейсы CS2 в Telegram. Тебе 3 бесплатных спина!")}`;
-    const t = api.tg();
-    if (t && t.openTelegramLink && !window.SKINS_DEMO) t.openTelegramLink(url);
-    else toast("В Telegram откроется выбор чата со ссылкой-приглашением");
-  });
-  $("duel-new").addEventListener("click", () => {
-    pickerGrid(INV.items.filter((i) => i.state === "free" && !i.overflow_until).sort((a, b) => b.price_cents - a.price_cents), [], 3, async (ids) => {
-      if (ids.length !== 3) return toast("Нужно ровно 3 предмета");
-      try {
-        await api.post("/duels", { item_ids: ids });
-        closeSheet();
-        await refresh();
-        toast("Дуэль создана: ждём соперника");
-        renderFriends();
-      } catch (err) { handleError(err); }
-    }, `<h2>Твоя тройка</h2><p class="lead">Выбери 3 предмета. Они не теряются: после дуэли вернутся в коллекцию.</p>`);
-  });
-  $("duels-list").addEventListener("click", async (e) => {
-    const b = e.target.closest("[data-duel]");
-    if (!b) return;
-    if (b.dataset.a === "cancel") {
-      try { await api.post(`/duels/${b.dataset.duel}/cancel`); await refresh(); renderFriends(); } catch (err) { handleError(err); }
-      return;
-    }
-    pickerGrid(INV.items.filter((i) => i.state === "free" && !i.overflow_until).sort((a, c) => c.price_cents - a.price_cents), [], 3, async (ids) => {
-      if (ids.length !== 3) return toast("Нужно ровно 3 предмета");
-      try {
-        const res = await api.post(`/duels/${b.dataset.duel}/join`, { item_ids: ids });
-        closeSheet();
-        haptic(res.you_won ? "success" : "warning");
-        await refresh();
-        openSheet(`<h2>${res.you_won ? "Победа!" : "Соперник сильнее"}</h2>
-          <div class="stats"><div><small>Соперник</small><b>${money(res.p1_power)}</b></div><div><small>Ты</small><b>${money(res.p2_power)}</b></div></div>
-          <p class="lead">${res.you_won ? `+${money(res.prize_cents)} от игры.` : "Предметы остались у тебя."}</p>`);
-        renderFriends();
-      } catch (err) { handleError(err); }
-    }, `<h2>Твоя тройка</h2><p class="lead">Выбери 3 предмета против тройки соперника.</p>`);
-  });
 
-  // ---------- ЕЩЁ ----------
-  function renderMore() {
-    const u = M.user;
-    const xpPct = Math.min(100, ((u.xp - u.xp_prev) / Math.max(1, u.xp_next - u.xp_prev)) * 100);
-    const show = (M.showcase || []).map(findItem).filter(Boolean);
-    $("profile").innerHTML = `
-      <div class="pc-head ${u.frame ? "framed" : ""}" style="${u.frame ? tc(C.cosmetics[u.frame].tier) : ""}">
-        <div><b>${esc(u.name || "Игрок")}</b><small>ID ${u.id}${u.vip_until ? " · VIP" : ""}</small></div>
-        <div class="lvl"><b>Ур. ${u.level}</b><div class="bar"><i style="width:${xpPct}%"></i></div><small>${u.xp} / ${u.xp_next} XP</small></div>
-      </div>
-      <div class="pc-stats"><div><small>Кейсов</small><b>${M.total_spins}</b></div><div><small>Предметов</small><b>${INV ? INV.summary.used : 0}</b></div><div><small>Коллекция</small><b>${INV ? money(INV.summary.value_cents) : "—"}</b></div></div>
-      <div class="showcase">${show.length ? show.map((i) => tileHtml(i)).join("") : '<p class="note">Витрина пустая: добавь до 3 лучших предметов из их карточек.</p>'}</div>`;
-    $("country-label").textContent = `${C.currency.countries[M.country].name}, ${M.currency.symbol}`;
+  async function renderRating() {
+    const boards = [["capital", "Капитал"], ["rarest", "Самый дорогой"], ["level", "Уровень"], ["collection", "Коллекция"]];
+    const p = page("Рейтинг", `
+      <div class="seg small" id="board-seg">${boards.map(([id, l]) => `<button type="button" data-board="${id}" class="${ui.board === id ? "on" : ""}">${l}</button>`).join("")}</div>
+      <div class="seg small" id="scope-seg"><button type="button" data-scope="friends" class="${ui.scope === "friends" ? "on" : ""}">Друзья</button><button type="button" data-scope="global" class="${ui.scope === "global" ? "on" : ""}">Все</button></div>
+      <ol class="board" id="board"></ol>`);
+    p.querySelector("#board-seg").onclick = (e) => { const b = e.target.closest("[data-board]"); if (b) { ui.board = b.dataset.board; renderRating(); } };
+    p.querySelector("#scope-seg").onclick = (e) => { const b = e.target.closest("[data-scope]"); if (b) { ui.scope = b.dataset.scope; renderRating(); } };
+    try {
+      const r = await api.get(`/leaderboard?board=${ui.board}&scope=${ui.scope}`);
+      const fmt = (v) => (ui.board === "level" ? `${v} XP` : ui.board === "collection" ? `${v} видов` : money(v));
+      p.querySelector("#board").innerHTML = r.rows.map((x) => `<li class="${x.me ? "me" : ""}"><span>${x.place}. ${esc(x.name)} <small>ур. ${x.level}</small></span><b>${fmt(x.value)}</b></li>`).join("")
+        || "<li>Пока пусто. Позови друзей, чтобы было с кем сравниться.</li>";
+    } catch (err) { handleError(err); }
   }
-  $("profile").addEventListener("click", (e) => { const t = e.target.closest("[data-item]"); if (t) showItem(findItem(+t.dataset.item)); });
-  document.querySelector(".menu-list").addEventListener("click", (e) => {
-    const b = e.target.closest("[data-open]");
-    if (!b) return;
-    ({ shop: openShop, raffle: openRaffle, fair: openFair, odds: () => openOdds(ui.level), cosmetics: openCosmetics, country: openCountry, settings: openSettings, terms: openTerms })[b.dataset.open]();
-  });
 
+  async function renderDuels() {
+    const p = page("Дуэли", `<p class="lead">Дуэль без ставок: каждый выбирает 3 предмета, сила тройки — сумма цен со случайным множителем 0,85–1,15. Победителю монеты от игры, у проигравшего ничего не забирают.</p>
+      <button class="btn-spin small" id="duel-new" type="button"><span>НОВАЯ ДУЭЛЬ</span></button><div id="duels-list" class="lots"></div>`);
+    const pick3 = (title, done) => pickerGrid(INV.items.filter((i) => i.state === "free" && !i.overflow_until).sort((a, b) => b.price_cents - a.price_cents), [], 3, (ids) => {
+      if (ids.length !== 3) return toast("Нужно ровно 3 предмета");
+      done(ids);
+    }, `<h2>Твоя тройка</h2><p class="lead">${title}</p>`);
+    p.querySelector("#duel-new").onclick = () => pick3("Предметы не теряются: после дуэли вернутся в Инвентарь.", async (ids) => {
+      try { await api.post("/duels", { item_ids: ids }); closeSheet(); await refresh(); toast("Дуэль создана: ждём соперника"); renderDuels(); } catch (err) { handleError(err); }
+    });
+    const list = p.querySelector("#duels-list");
+    try {
+      const d = await api.get("/duels");
+      list.innerHTML = (d.duels.length ? d.duels.map((x) => {
+        const mine = x.p1 === M.user.id;
+        const status = x.status === "open" ? (mine ? "ждёт соперника" : "можно принять") : x.status === "done" ? (x.winner === M.user.id ? "победа" : "поражение") : "закрыта";
+        return `<div class="trade"><div class="trade-h"><b>${esc(x.p1_name)}${x.p2 ? " vs " + esc(x.p2_name) : ""}</b><small class="${status === "победа" ? "up" : ""}">${status}</small></div>
+          <div class="mini-items">${x.p1_items.map((i) => `<img src="${esc(i.image_url)}" alt="">`).join("")}</div>
+          ${x.status === "done" ? `<small class="note">Сила: ${money(x.p1_power)} против ${money(x.p2_power)}</small>` : ""}
+          ${x.status === "open" ? `<div class="actions"><button type="button" class="${mine ? "wide" : "primary wide"}" data-duel="${x.id}" data-a="${mine ? "cancel" : "join"}">${mine ? "Отменить" : "Принять дуэль"}</button></div>` : ""}</div>`;
+      }).join("") : "") + `<p class="note">Сегодня осталось дуэлей: ${d.left_today}.</p>`;
+    } catch (err) { handleError(err); }
+    list.addEventListener("click", async (e) => {
+      const b = e.target.closest("[data-duel]");
+      if (!b) return;
+      if (b.dataset.a === "cancel") {
+        try { await api.post(`/duels/${b.dataset.duel}/cancel`); await refresh(); renderDuels(); } catch (err) { handleError(err); }
+        return;
+      }
+      pick3("Выбери 3 предмета против тройки соперника.", async (ids) => {
+        try {
+          const res = await api.post(`/duels/${b.dataset.duel}/join`, { item_ids: ids });
+          haptic(res.you_won ? "success" : "warning");
+          await refresh();
+          openSheet(`<h2>${res.you_won ? "Победа!" : "Соперник сильнее"}</h2>
+            <div class="stats"><div><small>Соперник</small><b>${money(res.p1_power)}</b></div><div><small>Ты</small><b>${money(res.p2_power)}</b></div></div>
+            <p class="lead">${res.you_won ? `+${money(res.prize_cents)} от игры.` : "Предметы остались у тебя."}</p>`);
+          renderDuels();
+        } catch (err) { handleError(err); }
+      });
+    });
+  }
+
+  // ---------- магазин, честная игра, шансы, косметика, страна, настройки ----------
   async function openShop() {
     try {
       const s = await api.get("/shop");
       const body = openSheet(`<h2>Магазин ⭐</h2>
         ${s.enabled ? "" : '<p class="banner">Покупки за Stars откроются после юридической проверки. Пока можно посмотреть, что будет.</p>'}
-        <p class="lead">Платно только попытки, удача, VIP и места. Монеты и кейсы за Stars не продаются. Траты за месяц: ${s.month_spent} из ${s.month_cap} ⭐.</p>
+        <p class="lead">За Stars только попытки, удача, VIP и места. Монеты и предметы за Stars не продаются. Траты за месяц: ${s.month_spent} из ${s.month_cap} ⭐.</p>
         ${s.warn ? '<p class="banner">Ты потратил больше 80% месячного лимита.</p>' : ""}
         <div class="shop">${s.products.map((p) => `<div class="product"><div><b>${esc(p.title)}</b>${p.reason && s.enabled ? `<small>${esc(p.reason)}</small>` : ""}</div>
           <button type="button" class="star-btn" data-p="${p.code}" ${s.enabled && p.available ? "" : "disabled"}>${p.stars} ⭐</button></div>`).join("")}</div>
-        <p class="note">Удача действует на 10 следующих спинов Обычной крутки и не складывается. Неиспользованные попытки и удачу можно вернуть через /paysupport.</p>`);
+        <p class="note">Удача ×N: на 10 следующих кейсах до ${money(C.luck.max_case_cents)} скины дороже кейса выпадают до N раз чаще. Средний возврат кейса с удачей не больше ${Object.entries(C.luck.max_return).map(([m, r]) => `${Math.round(r * 100)}% при ×${num(m)}`).join(", ")}: если на кейсе вышло бы больше, множитель там меньше, и страница кейса это показывает. Удачи не складываются. Неиспользованное можно вернуть через /paysupport.</p>`);
       body.addEventListener("click", async (e) => {
         const b = e.target.closest("[data-p]");
         if (!b) return;
@@ -1215,6 +1306,7 @@
   function rollSummary(res) {
     if (res.tiers) return res.tiers.map((t) => tier(t).name).join(", ");
     if (res.sector) return "сектор " + res.sector;
+    if (res.mult !== undefined) return `контракт ×${num(res.mult)}`;
     if (res.success !== undefined) return res.success ? "успех" : "неудача";
     if (res.p1 !== undefined) return `сила ${money(res.p1)} против ${money(res.p2)}`;
     return "";
@@ -1223,7 +1315,7 @@
   async function openFair(revealed) {
     try {
       const f = await api.get("/fair");
-      const kinds = { spin: "Спин", upgrade: "Апгрейд", contract: "5 в 1", wheel_daily: "Колесо дня", wheel_weekly: "Недельное колесо", duel: "Дуэль" };
+      const kinds = { spin: "Кейс", upgrade: "Апгрейд", contract: "Контракт", wheel_daily: "Колесо дня", wheel_weekly: "Недельное колесо", duel: "Дуэль" };
       const body = openSheet(`
         <h2>Честная игра</h2>
         <p class="lead">До броска сервер показывает хеш своего ключа. Каждое число броска = первые 52 бита HMAC-SHA256(ключ сервера, «твой ключ:nonce:i») / 2^52. После смены пары ключ раскрывается, и любой бросок можно пересчитать прямо здесь.</p>
@@ -1260,18 +1352,26 @@
     } catch (err) { handleError(err); }
   }
 
-  function openOdds(level) {
-    const scale = (odds) => odds.map((o) => `<tr style="${tc(o.tier)}"><td><span style="color:var(--tc)">${tier(o.tier).icon}</span> ${esc(tier(o.tier).name)}</td><td>${esc(tier(o.tier).cs2 || "")}</td><td>${pct(o.p, 2)}${o.p < 0.1 ? ` · 1 из ${Math.round(1 / o.p)}` : ""}</td></tr>`).join("");
-    const wears = C.wear.map((w) => `<tr><td>${WEAR[w[0]]}</td><td>${String(w[1]).replace(".", ",")}–${String(w[2]).replace(".", ",")}</td><td>${w[3]}%</td></tr>`).join("");
-    openSheet(`
+  function openOdds(caseId) {
+    const c = caseById(caseId) || C.cases[0];
+    const rows = Object.entries(c.tier_odds).sort((a, b) => rank(b[0]) - rank(a[0])).map(([t, p]) =>
+      `<tr style="${tc(t)}"><td><span style="color:var(--tc)">${tier(t).icon}</span> ${esc(tier(t).name)}</td><td>${pct(p, 2)}${p < 0.1 && p > 0 ? ` · 1 из ${Math.round(1 / p)}` : ""}</td></tr>`).join("");
+    const wears = C.wear.map((w) => `<tr><td>${WEAR[w[0]]}</td><td>${num(w[1])}–${num(w[2])}</td><td>${w[3]}%</td></tr>`).join("");
+    const body = openSheet(`
       <h2>Шансы</h2>
-      <p class="lead">Шансы одинаковы для всех и совпадают с теми, по которым бросает сервер. «Шанс 1 из N» на карточке всегда считается по шкале обычного кейса.</p>
-      <h3 class="h-sub">Обычный кейс CS2 (как у Valve)</h3>
-      <table class="odds-table"><tr><th>Ступень</th><th>В CS2</th><th>Шанс</th></tr>${scale(C.case_odds)}</table>
-      ${C.levels.filter((l) => l.odds).map((l) => `<h3 class="h-sub">${esc(l.name)} · ${money(l.price_cents)} · ${esc(l.what)}</h3><table class="odds-table">${scale(l.odds)}</table>`).join("")}
+      <p class="lead">Шансы одинаковы для всех и совпадают с теми, по которым бросает сервер.</p>
+      <label class="lead" for="odds-case">Кейс</label>
+      <select class="field" id="odds-case">${C.cases.map((x) => `<option value="${x.id}" ${x.id === c.id ? "selected" : ""}>${esc(x.name)} · ${money(x.price_cents)}</option>`).join("")}</select>
+      <table class="odds-table"><tr><th>Редкость</th><th>Шанс</th></tr>${rows}</table>
+      <p class="lead">Внутри редкости скин выпадает тем реже, чем он дороже (шанс каждого — на странице кейса). Гарантии у каждого кейса свои: Запрещённое и выше не позже 60-го открытия подряд, Засекреченное и выше не позже 300-го; шанс растёт заранее, с 51-го и 281-го. Цена кейса = средний дроп по рынку с гарантиями / 0,8.</p>
+      <h3 class="h-sub">Удача</h3>
+      <p class="lead">Удача ×N: скины дороже кейса выпадают до N раз чаще, вместе не больше ${pct(C.luck.max_boosted_share, 0)}, средний возврат с удачей не больше ${Object.entries(C.luck.max_return).map(([m, r]) => `${Math.round(r * 100)}% при ×${num(m)}`).join(", ")}. Работает на кейсах до ${money(C.luck.max_case_cents)}.</p>
+      <h3 class="h-sub">Контракт</h3>
+      <table class="odds-table"><tr><th>Множитель</th><th>Шанс</th></tr>${C.contracts.table.map((x) => `<tr><td>×${num(x.mult)}</td><td>${pct(x.p, 1)}</td></tr>`).join("")}</table>
       <h3 class="h-sub">Износ</h3>
       <table class="odds-table"><tr><th>Износ</th><th>Float</th><th>Шанс</th></tr>${wears}</table>
-      <p class="lead">StatTrak™ — 10%, если у скина он бывает. Гарантия на Обычной: Эпик и выше не позже 60-го кейса подряд, Легендарный и выше не позже 300-го; шанс растёт заранее, с 51-го и 281-го. Уровни выше Обычной без гарантий. Цена кейса и уровня = средняя цена выпадения по рынку / 0,8.</p>`);
+      <p class="lead">StatTrak™ — 10%, если у скина он бывает.</p>`);
+    body.querySelector("#odds-case").onchange = (e) => openOdds(e.target.value);
   }
 
   async function openCosmetics() {
@@ -1291,7 +1391,7 @@
   function openCountry(first) {
     const list = Object.entries(C.currency.countries);
     const body = openSheet(`<h2>${first === true ? "Где ты играешь?" : "Страна и валюта"}</h2>
-      <p class="lead">Страна меняет только то, как показываются суммы: ${money(100000)} у нас это ${list.slice(1, 4).map(([, c]) => Math.round(1000 * c.rate).toLocaleString("ru-RU") + " " + c.symbol).join(", ")}. Цены, шансы и баланс одни для всех. Менять можно раз в 30 дней.</p>
+      <p class="lead">Страна меняет только то, как показываются суммы. Цены, шансы и баланс одни для всех. Менять можно раз в 30 дней.</p>
       ${M.country_change_after ? `<p class="banner">Следующая смена после ${new Date(M.country_change_after * 1000).toLocaleDateString("ru-RU")}.</p>` : ""}
       <div class="country-list">${list.map(([code, c]) => `<button type="button" class="country ${code === M.country ? "on" : ""}" data-c="${code}"><span>${esc(c.name)}</span><b>${esc(c.symbol)}</b></button>`).join("")}</div>`);
     body.addEventListener("click", async (e) => {
@@ -1311,42 +1411,54 @@
       <h2>Настройки</h2>
       <label class="toggle" for="s-fast"><span>Всегда быстро<br><small class="lead">лента и колёса без долгой анимации</small></span><input type="checkbox" id="s-fast" ${settings.fast ? "checked" : ""}></label>
       <label class="toggle" for="s-nofx"><span>Без эффектов<br><small class="lead">без вспышек и свечения</small></span><input type="checkbox" id="s-nofx" ${settings.nofx ? "checked" : ""}></label>
-      <label class="toggle" for="s-noup"><span>Без апгрейдера<br><small class="lead">вкладка апгрейдера скрыта</small></span><input type="checkbox" id="s-noup" ${settings.noUpgrader ? "checked" : ""}></label>`);
+      <label class="toggle" for="s-noup"><span>Без апгрейдов<br><small class="lead">вкладка «Апгрейды» скрыта</small></span><input type="checkbox" id="s-noup" ${settings.noUpgrader ? "checked" : ""}></label>`);
     body.addEventListener("change", () => {
       settings.fast = body.querySelector("#s-fast").checked;
       settings.nofx = body.querySelector("#s-nofx").checked;
       settings.noUpgrader = body.querySelector("#s-noup").checked;
       saveSettings();
       document.body.classList.toggle("no-fx", settings.nofx);
+      renderHeader();
     });
   }
 
   function openTerms() {
     openSheet(`<h2>Условия</h2>
-      <p>Игровые рубли есть только внутри бота. Их нельзя купить за деньги, вывести или обменять на рубли, Stars или настоящие скины. Валюта твоей страны на экране — это пересчёт по игровому курсу.</p>
+      <p>Игровые рубли есть только внутри бота. Их нельзя купить за деньги, вывести или обменять на рубли, Stars или настоящие скины. Валюта твоей страны на экране — пересчёт по игровому курсу.</p>
       <p>Предметы — игровые копии скинов CS2 с ценами рынка. Вывода в Steam нет.</p>
       <p>За Stars продаются только попытки, удача, VIP и места, месячный лимит 500 ⭐.</p>
+      <p>Баннеры с пометкой «Реклама» — реклама Telegram-каналов. За переход и подписку ничего не начисляется.</p>
       <p>Шансы открыты на экране «Шансы», каждый бросок проверяется на экране «Честная игра».</p>
       <p>Уведомлений не больше 2 в день, ночью с 21:00 до 8:00 их нет.</p>`);
   }
 
   // ---------- навигация ----------
-  function switchTab(tab, sub) {
+  function switchTab(tab) {
+    if (tab === "upgrade" && settings.noUpgrader) tab = "cases";
     ui.tab = tab;
-    if (sub) ui.market = sub;
-    document.querySelectorAll(".screen").forEach((s) => (s.hidden = s.dataset.tab !== tab));
+    if (tab !== "inventory") ui.select = false;
+    document.querySelectorAll(".screen[data-tab]").forEach((s) => (s.hidden = s.dataset.tab !== tab));
     document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
+    $("live").hidden = tab !== "cases" || !$("live").innerHTML;
     $("screens").scrollTop = 0;
-    if (tab === "market") { renderMarket(); if (ui.market === "upgrade" && !ui.up.targets.length) loadTargets(); }
-    if (tab === "friends") renderFriends();
+    if (tab === "upgrade" && !ui.up.targets.length && upStake().sum > 0) loadTargets();
+    if (tab === "more") ui.page = null;
+    renderAll();
+    renderSelbar();
   }
-  $("tabs").addEventListener("click", (e) => { const b = e.target.closest("[data-tab]"); if (!b) return; haptic("tick"); switchTab(b.dataset.tab); });
+  $("tabs").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-tab]");
+    if (!b) return;
+    haptic("tick");
+    if (b.dataset.tab === "cases" && ui.tab === "cases") ui.caseId = null; // повторное нажатие — к списку кейсов
+    switchTab(b.dataset.tab);
+  });
   $("balance").addEventListener("click", () => openSheet(`
     <h2>${money(M.balance_cents)} ${esc(M.currency.game_label || "")}</h2>
-    <p class="lead">Игровые рубли: 1 игровой рубль = 1 рубль рыночной цены скина (курс ЦБ на ${esc(new Date(C.generated_at * 1000).toLocaleDateString("ru-RU"))}: ${String(C.usd_rub).replace(".", ",")} ₽ за $). За настоящие деньги не продаются и не выводятся.</p>
-    <div class="stats"><div><small>Как получить</small><b class="txt">продажа предметов, колесо, задания, дуэли, розыгрыш</b></div>
-    <div><small>Куда потратить</small><b class="txt">кейсы, уровни крутки, апгрейдер, рынок</b></div></div>`));
-  $("energy").addEventListener("click", () => toast(`Бесплатный спин раз в 3 часа, копится до 3. Работает на кейсе ${C.cases.find((c) => c.free).name}.`));
+    <p class="lead">Игровые рубли: 1 игровой рубль = 1 рубль рыночной цены скина (курс ЦБ ${num(C.usd_rub)} ₽ за $). За настоящие деньги не продаются и не выводятся.</p>
+    <div class="stats"><div><small>Как получить</small><b class="txt">продажа скинов, колесо, задания, дуэли, розыгрыш</b></div>
+    <div><small>Куда потратить</small><b class="txt">кейсы, апгрейды, рынок</b></div></div>`));
+  $("energy").addEventListener("click", () => { switchTab("cases"); openCase(C.free_case_id); });
 
   // ---------- старт ----------
   async function boot() {
@@ -1358,9 +1470,8 @@
     document.body.classList.toggle("no-fx", settings.nofx);
     try {
       C = await api.get("/config");
-      ui.caseId = C.free_case_id;
-      if (!C.levels.some((l) => l.id === ui.level)) ui.level = "common";
       await refresh();
+      loadLive();
       if (!M.country_confirmed) openCountry(true);
       else if (M.last_drop) {
         const items = M.last_drop.item_ids.map(findItem).filter(Boolean);

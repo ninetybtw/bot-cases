@@ -1,6 +1,6 @@
 # API мини-приложения
 
-Версия 1.4-cs2. Базовый адрес `/v1`, все ответы в JSON. Контракт пакета 1.4 (`docs/API.md` пакета), реализация в `skinsbot/web.py`.
+Версия 1.5-cs2. Базовый адрес `/v1`, все ответы в JSON. Контракт пакета 1.4 (`docs/API.md` пакета), реализация в `skinsbot/web.py`.
 
 **Заголовки**
 
@@ -18,23 +18,23 @@
 { "error": { "code": "NOT_ENOUGH_COINS", "message": "Не хватает 400 ₽. Задания и колесо дадут монеты.", "need_cents": 40000 } }
 ```
 
-Коды: `UNAUTHORIZED`, `RATE_LIMIT`, `BAD_REQUEST`, `NOT_FOUND`, `NOT_ENOUGH_COINS`, `NO_ENERGY`, `DAILY_LIMIT`, `LEVEL_LIMIT`, `INVENTORY_FULL`, `ITEM_LOCKED`, `ITEM_BUSY`, `PRICE_OUT_OF_BAND`, `STARS_MONTH_CAP`, `NOT_ALLOWED_YET`, `CONFIG_CHANGED`, `CONFIRM_REQUIRED` (с `pause_s`), `CONFLICT`, `DISABLED`, `FORBIDDEN`. Текст `message` написан в валюте страны игрока.
+Коды: `UNAUTHORIZED`, `RATE_LIMIT`, `BAD_REQUEST`, `NOT_FOUND`, `NOT_ENOUGH_COINS`, `NO_ENERGY`, `DAILY_LIMIT`, `INVENTORY_FULL`, `ITEM_LOCKED`, `ITEM_BUSY`, `PRICE_OUT_OF_BAND`, `STARS_MONTH_CAP`, `NOT_ALLOWED_YET`, `CONFIG_CHANGED`, `CONFIRM_REQUIRED` (без паузы: клиент показывает подтверждение и повторяет запрос с `confirmed: true`), `CONFLICT`, `DISABLED`, `FORBIDDEN`. Текст `message` написан в валюте страны игрока.
 
 ## Профиль и конфиг
 
 | Метод | Путь | Что делает |
 | --- | --- | --- |
-| GET | `/config` | Публичный конфиг: ступени, шансы кейса, уровни с ценами и целью, кейсы с составом, износ, лимиты, колёса, валюты |
-| GET | `/me` | Профиль: уровень и опыт, страна и `currency`, баланс, энергия, попытки, бонусные спины, лимиты дня, удача, гарантии (`epic_chance_pct`), места и переполнение, задания дня, честная игра, витрина, последний дроп, ссылка-приглашение |
+| GET | `/config` | Публичный конфиг: ступени, категории, кейсы (`category`, `price_cents`, `ev_cents`, `free`, `luck`, `tier_odds`, `items` с шансом `p` каждого скина), баннеры, группы быстрой продажи, удача (`max_case_cents`, `max_return`), контракты (`min_items`, `max_items`, `max_total_cents`, `table`), износ, лимиты, колёса, валюты |
+| GET | `/me` | Профиль: уровень и опыт, страна и `currency`, баланс, энергия, попытки, бонусные спины, лимиты дня, удача (`mult`, `spins_left`, `cases`: действующий множитель на каждом кейсе), гарантии по кейсам (`pity[case_id]`: `epic_in`, `epic_chance_pct` …), места и переполнение, задания дня, честная игра, витрина, последний дроп, ссылка-приглашение |
 | PUT | `/me/country` | `{ "country": "KZ" }`, не чаще раза в 30 дней |
 | POST | `/me/last-drop/ack` | Последний дроп показан после обрыва анимации |
 | GET | `/users/:id` | Публичный профиль для обмена: витрина и свободные предметы |
 
 ## Спин и честная игра
 
-`POST /spin` `{ "case_id": "crate-4904", "level": "common", "source": "free|coin|attempt", "count": 1, "confirmed": false }`
+`POST /spin` `{ "case_id": "rookie", "source": "free|coin|attempt", "count": 1, "confirmed": false }`
 
-`level` — `common` (обычный кейс, нужен `case_id`) или `rare | epic | legendary | elite` (только `coin`). Ответ:
+`free` и `attempt` — только бесплатный кейс (`free_case_id`). Ответ:
 
 ```json
 {
@@ -42,7 +42,8 @@
               "stattrak": true, "pattern": 412, "price_cents": 18450, "one_in": 31, "image_url": "…" }],
               "reel": [{ "tier": "rare", "image_url": "…", "name": "…" }], "stop_index": 52, "pity_applied": null }],
   "fair": { "server_seed_hash": "…", "client_seed": "…", "nonce": 7 },
-  "balance_cents": 114000, "energy": { "now": 1, "max": 3, "next_at": 1791830000 }, "overflow": 0
+  "balance_cents": 114000, "energy": { "now": 1, "max": 3, "next_at": 1791830000 }, "overflow": 0,
+  "luck_used": 5.6, "pity": { "epic_in": 59, "legend_in": 299, "epic_chance_pct": 3.99, "legend_chance_pct": 0.32 }
 }
 ```
 
@@ -57,21 +58,24 @@
 | --- | --- | --- |
 | GET | `/inventory?state=&tier=&q=&sort=new\|price\|tier\|growth` | Предметы и сводка: места, переполнение, стоимость, изменение за неделю |
 | GET | `/items/:id` | Карточка, график цены 30 дней, история событий |
-| POST | `/items/sell` | `{ "item_ids": [...], "confirmed": true }` — продажа системе по 60%, ответ с `sale_id` и `undo_until` |
+| POST | `/items/sell` | `{ "item_ids": [...], "confirmed": true }` — продажа системе по 60%, ответ с `sale_id` и `undo_until`. Засекреченное+ (одно или в группе) только с `confirmed` |
 | POST | `/sales/:id/undo` | Отмена продажи в течение 10 минут, не больше 5 раз в сутки |
 | POST | `/items/:id/lock`, `/items/:id/unlock` | Замок; снятие с `{ "confirm": true }` |
+| GET | `/items/sell-groups` | Кнопки быстрой продажи: все скины и каждая редкость, число и сумма |
+| POST | `/items/sell-group/quote` | `{ "group": "all\|common\|…\|secret" }` — свободные предметы группы (кроме под замком и на удержании) и сумма; дальше `POST /items/sell` с `confirmed: true` |
 | POST | `/items/sell-duplicates/quote` | Дубли и сумма до подтверждения |
-| POST | `/items/sell-cheaper/quote` | `{ "max_cents": 5000 }` — всё дешевле суммы, кроме Легендарного+ и под замком |
+| POST | `/items/sell-cheaper/quote` | `{ "max_cents": 5000 }` — всё дешевле суммы, кроме под замком |
 | POST | `/showcase` | `{ "item_ids": [a, b, c] }` — витрина профиля |
 
 ## Контракты и апгрейдер
 
 | Метод | Путь | Что делает |
 | --- | --- | --- |
-| POST | `/contracts` | `{ "item_ids": [5 штук], "confirmed": true }` |
+| POST | `/contracts/quote` | `{ "item_ids": [3–10 любой редкости] }` → `total_cents`, `min_cents`, `max_cents`, `ev_cents`, `avg_float`, `stattrak`, `confirm_required` |
+| POST | `/contracts` | `{ "item_ids": [...], "confirmed": true }` → `mult`, `total_cents`, `item`, `fair`. С Запрещённым+ во входах нужен `confirmed` |
 | GET | `/upgrades/targets?stake_cents=&mult=2` | Цели дороже ставки примерно в `mult` раз |
 | POST | `/upgrades/quote` | `{ "stake_item_ids", "stake_coins_cents", "target": { "catalog_item_id", "wear", "stattrak" } }` → шанс, формула, нужно ли подтверждение |
-| POST | `/upgrades` | То же плюс `quote_chance_pct` и `confirmed`. Если шанс изменился — `CONFIG_CHANGED`. Ответ: `success`, `roll` (0–100), `chance_pct`, `parts_cents`, `next_bonus_pct` |
+| POST | `/upgrades` | То же плюс `quote_chance_pct` и `confirmed`. Ограничения доли ставки от коллекции нет. Если шанс изменился — `CONFIG_CHANGED`. Ответ: `success`, `roll` (0–100), `chance_pct`, `parts_cents`, `next_bonus_pct` |
 
 ## Рынок и обмены
 
@@ -102,7 +106,8 @@
 | GET/POST | `/duels` | Дуэли без ставок: `{ "item_ids": [3], "friend_id": null }` |
 | POST | `/duels/:id/join`, `/duels/:id/cancel` | Принять или отменить |
 | GET | `/cosmetics`, POST `/cosmetics/equip` | Рамки и значки |
-| GET | `/feed` | Лента дропов Эпик+ |
+| GET | `/feed` | Лента дропов Запрещённое+ |
+| POST | `/banners/:id/click` | Переход по рекламному баннеру: счётчик кликов, ответ `{ "url" }`. Наград нет |
 | POST | `/share/:item_id` | Ссылка на PNG-карточку дропа и текст для `shareToStory` |
 | GET | `/share/:item_id.png?t=` | Сама картинка (подписанная ссылка) |
 
@@ -119,7 +124,7 @@
 
 | Путь | Что делает |
 | --- | --- |
-| `GET /admin/economy?days=14` | Приток и слив по дням и причинам, приток на активного игрока в платных спинах, алерт, возврат по шкалам |
+| `GET /admin/economy?days=14` | Приток и слив по дням и причинам, приток на активного игрока в платных спинах, алерт, возврат каждого кейса с гарантиями, клики по баннерам |
 | `GET /admin/configs`, `POST /admin/configs/check`, `POST /admin/configs` | Версии конфига: проверка (суммы шансов, возврат с гарантиями 78–82%, курсы), сравнение, сохранение и включение |
 | `GET /admin/items/:id`, `POST /admin/items/:id/freeze\|unfreeze` | Предмет, история, дроп, заморозка |
 | `GET /admin/users/:id`, `POST /admin/users/:id/ban\|unban` | Игрок, журнал денег, продажи, бан |

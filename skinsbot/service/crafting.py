@@ -1,4 +1,4 @@
-"""Апгрейдер и контракты «5 в 1»."""
+"""Апгрейды и контракты (как trade-up в CS2, но с любой редкостью)."""
 
 from __future__ import annotations
 
@@ -67,12 +67,8 @@ class Crafting:
                 raise GameError("CONFIG_CHANGED", "Цены обновились, шанс изменился. Посмотри новый шанс.",
                                 chance_pct=round(chance * 100, 2))
             if confirm and not confirmed:
-                raise GameError("CONFIRM_REQUIRED", "Точно? Ставка сгорит при неудаче.", pause_s=u["confirm_pause_s"])
+                raise GameError("CONFIRM_REQUIRED", "Точно? Ставка сгорит при неудаче.")
             p = self._player(user_id)
-            collection = sum(self.item_view(r)["price_cents"] for r in self.conn.execute(
-                "SELECT * FROM items WHERE owner=? AND state!='gone'", (user_id,)))
-            if stake > (collection + p["balance"]) * u["max_share_of_collection"]:
-                raise GameError("BAD_REQUEST", "За раз можно поставить не больше половины коллекции и баланса.")
             if not rows and self._free_slots(user_id) < 1:
                 raise GameError("INVENTORY_FULL", "Освободи место в коллекции.")
             if stake_coins:
@@ -109,33 +105,43 @@ class Crafting:
 
         return self.idempotent(user_id, idem_key, "upgrade", run)
 
-    # --- контракт «5 в 1» ------------------------------------------------------
+    # --- контракт ---------------------------------------------------------------
+
+    def _contract_rows(self, user_id: int, item_ids: list[int]):
+        c = rules.CFG["contracts"]
+        if not c["min_items"] <= len(item_ids) <= c["max_items"]:
+            raise GameError("BAD_REQUEST", f"В контракт нужно от {c['min_items']} до {c['max_items']} предметов любой редкости.")
+        rows = self._owned(user_id, item_ids)
+        total = sum(self.item_view(r)["price_cents"] for r in rows)
+        if total > self.catalog.contract_max_total():
+            raise GameError("BAD_REQUEST", f"Контракт дороже {self.money(user_id, self.catalog.contract_max_total())} не собрать: "
+                            "в каталоге нет таких дорогих наград. Убери самый дорогой предмет.")
+        return rows, total
+
+    def contract_quote(self, user_id: int, item_ids: list[int]) -> dict:
+        rows, total = self._contract_rows(user_id, item_ids)
+        floats = [r["float_value"] for r in rows if r["float_value"] is not None]
+        return {"total_cents": total, **game.contract_range(total),
+                "avg_float": round(sum(floats) / len(floats), 6) if floats else None,
+                "stattrak": all(r["stattrak"] for r in rows),
+                "confirm_required": any(rules.at_least(r["tier"], rules.CFG["upgrader"]["confirm_from"]) for r in rows)}
 
     def contract(self, user_id: int, item_ids: list[int], confirmed: bool = False, idem_key: str | None = None) -> dict:
         def run():
-            c = rules.CFG["contracts"]
-            if len(item_ids) != c["inputs"]:
-                raise GameError("BAD_REQUEST", f"Нужно ровно {c['inputs']} предметов.")
-            rows = self._owned(user_id, item_ids)
-            tiers = {r["tier"] for r in rows}
-            if len(tiers) != 1:
-                raise GameError("BAD_REQUEST", "Все 5 предметов должны быть одной ступени.")
-            tier = tiers.pop()
-            if tier not in c["next"]:
-                raise GameError("BAD_REQUEST", "Эту ступень контрактом не поднять.")
-            if rules.at_least(tier, "epic") and not confirmed:
-                raise GameError("CONFIRM_REQUIRED", "Пять предметов исчезнут, взамен придёт один.", pause_s=3)
+            rows, total = self._contract_rows(user_id, item_ids)
+            if any(rules.at_least(r["tier"], rules.CFG["upgrader"]["confirm_from"]) for r in rows) and not confirmed:
+                raise GameError("CONFIRM_REQUIRED", f"Предметы на {self.money(user_id, total)} исчезнут, взамен придёт один.")
             rng, seed = self._rng(user_id)
-            inputs = [{"catalog_id": r["catalog_id"], "tier": r["tier"], "float_value": r["float_value"],
+            inputs = [{"price_cents": self.item_view(r)["price_cents"], "float_value": r["float_value"],
                        "stattrak": bool(r["stattrak"])} for r in rows]
-            drop, success = game.contract(rng, inputs, self.catalog.items, self.catalog.cases)
+            drop, mult = game.contract(rng, inputs, self.catalog.items)
             for r in rows:
                 self._update_item(r, "contract_in", user_id, state="gone", owner=None)
             new_id = self._insert_item(user_id, drop, "contract")
-            self._log_roll(user_id, "contract", rng, seed, {"inputs": item_ids, "item": new_id, "success": success})
+            self._log_roll(user_id, "contract", rng, seed, {"inputs": item_ids, "item": new_id, "mult": mult,
+                                                             "total": total, "price": drop.price_cents})
             self._quest_progress(user_id, "contract1", 1, weekly=True)
-            guaranteed = rules.rank(tier) <= rules.rank(c["guaranteed_up_to"])
-            return {"success": success, "chance_pct": 100 if guaranteed else c["success_pct"],
-                    "item": self.item_view(self._item(new_id)), "fair": self._fair(seed, rng.nonce)}
+            return {"mult": mult, "total_cents": total, "item": self.item_view(self._item(new_id)),
+                    "fair": self._fair(seed, rng.nonce), "balance_cents": self._player(user_id)["balance"]}
 
         return self.idempotent(user_id, idem_key, "contract", run)

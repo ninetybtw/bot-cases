@@ -1,4 +1,4 @@
-"""Модель шансов из docs/ODDS.md: точный возврат с мягкими гарантиями, подбор шкалы уровня, проверка конфига.
+"""Модель шансов из docs/ODDS.md: точный возврат с мягкими гарантиями, проверка конфига.
 
 Перенос reference/odds_lab.py на чистый Python. consolidated() совпадает с образцом до 3 знаков
 (тест tests/test_odds.py сверяет их на шкале кейса).
@@ -42,6 +42,8 @@ def consolidated(odds: dict[str, float], pity: dict | None = None) -> dict[str, 
     dB, dA, dL = norm(inB), norm(inA), norm(low)
     baseA = sum(pi for pi, a, b in zip(p, inA, inB) if a or b)
     baseB = sum(pi for pi, b in zip(p, inB) if b)
+    if baseA <= 0 or baseB <= 0:  # в кейсе нет одной из групп — гарантии не действуют (game.apply_pity)
+        return dict(odds)
     HA, HB = A["hard"], B["hard"]
     qa_e = [group_prob(baseA, e + 1, A["soft"], A["step_pct"] / 100, HA) for e in range(HA)]
     alive = [0.0] * HA
@@ -68,70 +70,44 @@ def consolidated(odds: dict[str, float], pity: dict | None = None) -> dict[str, 
     return {t: c / steps for t, c in zip(tiers, counts)}
 
 
-def rtp(odds: dict[str, float], tier_value: dict[str, float], price: float) -> float:
-    return sum(p * tier_value[t] for t, p in odds.items()) / price
+def validate_config(cfg: dict, catalog=None) -> list[str]:
+    """Проверки новой версии конфига перед включением (админка, M0/M8). Пустой список — всё хорошо.
 
-
-def shape(values: dict[str, float], alpha: float) -> dict[str, float]:
-    """Шанс ступени обратно пропорционален её цене в степени α."""
-    w = {t: v ** (-alpha) for t, v in values.items()}
-    s = sum(w.values())
-    return {t: x / s for t, x in w.items()}
-
-
-def solve_level(values: dict[str, float], price: float, target: float | None = None) -> dict[str, float]:
-    """Шкала уровня: подобрать α так, чтобы Σ p·L = target × цена (ТЗ, «Алгоритм построения уровня»)."""
-    target = target or rules.CFG["target_return"]
-    lo, hi = 0.01, 6.0
-    for _ in range(100):
-        mid = (lo + hi) / 2
-        if rtp(shape(values, mid), values, price) > target:
-            lo = mid
-        else:
-            hi = mid
-    odds = shape(values, (lo + hi) / 2)
-    rounded = {t: round(p * 100, 2) for t, p in odds.items()}
-    bottom = min(rounded, key=rules.rank)
-    rounded[bottom] = round(rounded[bottom] + 100 - sum(rounded.values()), 2)
-    return {t: p / 100 for t, p in rounded.items()}
-
-
-def validate_config(cfg: dict, tier_values: dict[str, float] | None = None, case_rtps: dict[str, float] | None = None) -> list[str]:
-    """Проверки новой версии конфига перед включением (админка, M0/M8). Пустой список — всё хорошо."""
+    Возврат каждого кейса с гарантиями и средний множитель контракта должны быть в коридоре return_corridor."""
     errors = []
     lo, hi = cfg["return_corridor"]
-
-    def check_sum(name, odds):
-        total = sum(odds.values())
-        if abs(total - 100) > 0.01:
-            errors.append(f"{name}: сумма шансов {total:.2f}%, а должна быть 100%")
-
-    check_sum("кейс CS2", cfg["case_odds"])
-    for key, lvl in cfg["levels"].items():
-        if lvl["odds"] is None:
-            continue
-        odds = lvl["odds"]
-        check_sum(f"уровень {lvl['name']}", odds)
-        ordered = sorted(odds, key=rules.rank)
-        if odds[ordered[0]] < cfg["level_checks"]["min_bottom_pct"]:
-            errors.append(f"уровень {lvl['name']}: нижняя ступень меньше {cfg['level_checks']['min_bottom_pct']}%")
-        if any(odds[a] < odds[b] for a, b in zip(ordered, ordered[1:])):
-            errors.append(f"уровень {lvl['name']}: шансы должны убывать со ступенью")
     for code, c in cfg["currency"]["countries"].items():
         if not c.get("rate") or c["rate"] <= 0:
             errors.append(f"курс {code} должен быть больше нуля")
-    if tier_values:
+    for key in ("epic_plus", "legend_plus"):
+        p = cfg["pity"][key]
+        if not 0 < p["soft"] <= p["hard"]:
+            errors.append(f"гарантия {key}: нужно 0 < soft ≤ hard")
+    if not 0 < cfg["luck"]["max_boosted_share"] < 1:
+        errors.append("удача: max_boosted_share должен быть меньше 1")
+    caps = sorted((float(k), v) for k, v in cfg["luck"]["max_return"].items())
+    if any(b[1] < a[1] for a, b in zip(caps, caps[1:])):
+        errors.append("удача: потолок возврата должен расти с множителем")
+    for code, prod in cfg["stars"]["products"].items():
+        m = (prod["grants"].get("luck") or {}).get("mult")
+        if m and not any(float(k) <= m for k in cfg["luck"]["max_return"]):
+            errors.append(f"удача: нет потолка возврата для {code}")
+    c = cfg["contracts"]
+    if not 1 <= c["min_items"] <= c["max_items"]:
+        errors.append("контракт: нужно 1 ≤ min_items ≤ max_items")
+    total = sum(w for _, w in c["multipliers"])
+    ev = sum(m * w for m, w in c["multipliers"]) / total if total else 0
+    if not lo <= ev <= hi:
+        errors.append(f"контракт: средний множитель {ev:.3f} вне коридора {lo:.0%}–{hi:.0%}")
+    if cfg["upgrader"]["max_chance_pct"] > 100 or cfg["upgrader"]["k"] > 1:
+        errors.append("апгрейд: шанс не может быть больше 100% и k больше 1")
+    if catalog is not None:
         old = json.loads(json.dumps(rules.CFG))
         rules.activate(cfg)
         try:
-            odds = consolidated(rules.case_odds())
-            ladder_price = sum(p * tier_values[t] for t, p in rules.case_odds().items()) / cfg["target_return"]
-            r = rtp(odds, tier_values, ladder_price)
-            if not lo <= r <= hi:
-                errors.append(f"возврат кейса с гарантиями {r:.1%} вне коридора {lo:.0%}–{hi:.0%}")
+            for name, r in catalog.rtps().items():
+                if not lo <= r <= hi:
+                    errors.append(f"кейс {name}: возврат с гарантиями {r:.1%} вне коридора {lo:.0%}–{hi:.0%}")
         finally:
             rules.activate(old)
-    for name, r in (case_rtps or {}).items():
-        if not lo <= r <= hi:
-            errors.append(f"{name}: возврат {r:.1%} вне коридора {lo:.0%}–{hi:.0%}")
     return errors

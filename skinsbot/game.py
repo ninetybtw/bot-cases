@@ -58,15 +58,55 @@ class FairRng:
 # --- шансы ---------------------------------------------------------------
 
 
-def apply_luck(odds: dict[str, float], m: float) -> dict[str, float]:
-    """Удача: все ступени кроме двух самых частых ×m, частые отдают разницу пропорционально."""
-    if not m or m == 1:
-        return dict(odds)
-    donors = sorted(odds, key=lambda t: -odds[t])[: rules.CFG["luck"]["donors"]]
-    boosted = {t: p * m for t, p in odds.items() if t not in donors}
-    left = 1 - sum(boosted.values())
-    donor_total = sum(odds[t] for t in donors)
-    return {t: boosted[t] if t in boosted else odds[t] / donor_total * left for t in odds}
+def lucky_weights(case: dict, items: dict[str, dict], m: float) -> tuple[dict[str, float], float]:
+    """Удача ×m: скины дороже цены кейса выпадают в m раз чаще, остальные реже пропорционально.
+
+    Дорогие вместе не больше luck.max_boosted_share. Если средний возврат кейса с удачей вышел бы больше
+    luck.max_return[×m], множитель на этом кейсе снижается до этой границы. Удача никогда не снижает возврат:
+    шанс переходит только от скинов не дороже кейса к скинам дороже кейса. Возвращает (веса, действующий множитель)."""
+    w = case["weights"]
+    if not m or m <= 1:
+        return w, 1.0
+    cfg = rules.CFG["luck"]
+    price = case["price_cents"]
+    value = {i: rules.item_expected_cents(items[i]) for i in w}
+    boosted = [i for i in w if value[i] > price]
+    rest = 1 - sum(w[i] for i in boosted)
+    if not boosted or rest <= 0:
+        return w, 1.0
+
+    def apply(k: float) -> dict[str, float]:
+        b = {i: w[i] * k for i in boosted}
+        total = sum(b.values())
+        if total > cfg["max_boosted_share"]:
+            b = {i: x / total * cfg["max_boosted_share"] for i, x in b.items()}
+            total = cfg["max_boosted_share"]
+        return {i: b[i] if i in b else w[i] / rest * (1 - total) for i in w}
+
+    def ret(o: dict[str, float]) -> float:
+        return sum(o[i] * value[i] for i in o) / price
+
+    cap = luck_max_return(m)
+    if ret(apply(m)) <= cap:
+        return apply(m), float(m)
+    if ret(w) >= cap:
+        return w, 1.0
+    lo, hi = 1.0, float(m)
+    for _ in range(60):
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if ret(apply(mid)) <= cap else (lo, mid)
+    return apply(lo), lo
+
+
+def luck_max_return(m: float) -> float:
+    """Потолок среднего возврата для удачи ×m (luck.max_return, ближайший множитель не больше m)."""
+    caps = {float(k): v for k, v in rules.CFG["luck"]["max_return"].items()}
+    below = [k for k in caps if k <= m]
+    return caps[max(below)] if below else 1.0
+
+
+def tier_odds_of(case: dict, weights: dict[str, float]) -> dict[str, float]:
+    return {t: sum(weights[i] for i in ids) for t, ids in case["pools"].items()}
 
 
 def apply_pity(odds: dict[str, float], since_epic: int, since_legendary: int) -> tuple[dict[str, float], str | None]:
@@ -97,8 +137,9 @@ def apply_pity(odds: dict[str, float], since_epic: int, since_legendary: int) ->
     return out, applied
 
 
-def spin_odds(since_epic: int, since_legendary: int, luck: float = 1.0) -> tuple[dict[str, float], str | None]:
-    return apply_pity(apply_luck(rules.case_odds(), luck), since_epic, since_legendary)
+def spin_odds(tier_odds: dict[str, float], since_epic: int, since_legendary: int) -> tuple[dict[str, float], str | None]:
+    """Шкала кейса с мягкой гарантией (счётчики гарантий у каждого кейса свои). Удача уже в tier_odds."""
+    return apply_pity(tier_odds, since_epic, since_legendary)
 
 
 def one_in(p: float) -> int:
@@ -161,25 +202,23 @@ def make_drop(rng: FairRng, item: dict, stattrak: bool | None = None, float_valu
                 item_price(item, wear, stattrak))
 
 
-def open_pool(rng: FairRng, pools: dict[str, list[str]], items: dict[str, dict], odds: dict[str, float]) -> Drop:
-    available = {t: p for t, p in odds.items() if pools.get(t)}
+def open_case(rng: FairRng, case: dict, items: dict[str, dict], odds: dict[str, float],
+              weights: dict[str, float] | None = None) -> Drop:
+    """Ступень по шкале (с удачей и гарантией), затем предмет ступени по его шансу в кейсе (с удачей)."""
+    weights = weights or case["weights"]
+    available = {t: p for t, p in odds.items() if case["pools"].get(t)}
     tier = rng.weighted(available)
-    return make_drop(rng, items[rng.choice(pools[tier])])
+    item_id = rng.weighted({i: weights[i] for i in case["pools"][tier]})
+    return make_drop(rng, items[item_id])
 
 
-def reel(rng_cosmetic, pools: dict[str, list[str]], odds: dict[str, float], length: int, stop: int, drop_id: str) -> list[str]:
-    """Лента для анимации: соседи по обычным шансам, без подставных редких рядом с остановкой.
+def reel(rng_cosmetic, case: dict, length: int, stop: int, drop_id: str) -> list[str]:
+    """Лента для анимации: соседи по шансам кейса, без подставных редких рядом с остановкой.
     rng_cosmetic — обычный random.Random: лента не влияет на исход и не тратит числа честного броска."""
-    available = {t: p for t, p in odds.items() if pools.get(t)}
-    tiers, weights = zip(*available.items())
-    out = []
-    for i in range(length):
-        if i == stop:
-            out.append(drop_id)
-            continue
-        t = rng_cosmetic.choices(tiers, weights)[0]
-        out.append(rng_cosmetic.choice(pools[t]))
-    return out
+    ids, weights = zip(*case["weights"].items())
+    picks = rng_cosmetic.choices(ids, weights, k=length)
+    picks[stop] = drop_id
+    return list(picks)
 
 
 # --- апгрейдер ------------------------------------------------------------
@@ -197,32 +236,56 @@ def upgrade_chance(stake_cents: int, target_cents: int, bonus_pct: float) -> flo
     return min(chance, u["max_chance_pct"] / 100)
 
 
-# --- контракт «5 в 1» ----------------------------------------------------
+# --- контракт ---------------------------------------------------------------
 
 
-def contract(rng: FairRng, inputs: list[dict], items: dict[str, dict], cases: dict[str, dict]) -> tuple[Drop, bool]:
-    """inputs: экземпляры {catalog_id, tier, float_value, stattrak}. Возвращает (дроп, успех)."""
+def contract(rng: FairRng, inputs: list[dict], items: dict[str, dict]) -> tuple[Drop, float]:
+    """Контракт как trade-up в CS2, но с любой редкостью входов.
+
+    inputs: [{price_cents, float_value, stattrak}] — 3–10 предметов. Цена результата = сумма входов × множитель
+    (contracts.multipliers, средний ≈ 0,8). Float результата = min + средний float входов × (max − min),
+    из него износ; StatTrak, если все входы StatTrak. Результат — ближайший предмет дешевле или дороже цели,
+    дороже с шансом (цель − дешевле) / (дороже − дешевле): средняя цена результата ровно равна цели.
+    Возвращает (дроп, множитель)."""
+    import bisect
+
     c = rules.CFG["contracts"]
-    tier = inputs[0]["tier"]
-    guaranteed = rules.rank(tier) <= rules.rank(c["guaranteed_up_to"])
-    success = guaranteed or rng.random() < c["success_pct"] / 100
-    out_tier = c["next"][tier] if success else tier
-    source = items[rng.choice(inputs)["catalog_id"]]
-    pool = []
-    for case_id in source["cases"]:
-        if case_id in cases:
-            pool += cases[case_id]["pools"].get(out_tier, [])
-    if not pool:
-        for cs in cases.values():
-            pool += cs["pools"].get(out_tier, [])
-    item = items[rng.choice(sorted(set(pool)))]
+    total = sum(i["price_cents"] for i in inputs)
+    mult = float(rng.weighted({str(m): w for m, w in c["multipliers"]}))
+    target = max(1.0, total * mult)
     floats = [i["float_value"] for i in inputs if i.get("float_value") is not None]
-    float_value = None
-    if item.get("wears") and floats:
-        avg = sum(floats) / len(floats)
-        float_value = round(item["min_float"] + avg * (item["max_float"] - item["min_float"]), 6)
-    stattrak = bool(item.get("stattrak")) and all(i.get("stattrak") for i in inputs)
-    return make_drop(rng, item, stattrak=stattrak, float_value=float_value), success
+    avg = sum(floats) / len(floats) if floats else rng.random()
+    want_st = all(i.get("stattrak") for i in inputs)
+    cands = []
+    for item_id in sorted(items):
+        it = items[item_id]
+        fv = wear = None
+        if it.get("wears"):
+            fv = round(it["min_float"] + avg * (it["max_float"] - it["min_float"]), 6)
+            wear = wear_for_float(it, fv)
+        st = want_st and bool(it.get("stattrak"))
+        key = rules.price_key(wear, st)
+        if key in it["prices"]:
+            cands.append((it["prices"][key], item_id, fv, st))
+    cands.sort()
+    prices = [x[0] for x in cands]
+    k = bisect.bisect_left(prices, target)
+    lo, hi = cands[max(0, k - 1)], cands[min(k, len(cands) - 1)]
+    u = rng.random()
+    if hi[0] > lo[0] and lo[0] <= target <= hi[0]:
+        pick = hi if u < (target - lo[0]) / (hi[0] - lo[0]) else lo
+    else:
+        pick = hi if k < len(cands) and prices[k] == target else (lo if k else hi)
+    _, item_id, fv, st = pick
+    return make_drop(rng, items[item_id], stattrak=st, float_value=fv), mult
+
+
+def contract_range(total_cents: int) -> dict:
+    ms = rules.CFG["contracts"]["multipliers"]
+    w = sum(x for _, x in ms)
+    return {"min_cents": round(total_cents * min(m for m, _ in ms)), "max_cents": round(total_cents * max(m for m, _ in ms)),
+            "ev_cents": round(total_cents * sum(m * x for m, x in ms) / w),
+            "table": [{"mult": m, "p": x / w} for m, x in ms]}
 
 
 # --- колёса, дуэли, розыгрыш -------------------------------------------------

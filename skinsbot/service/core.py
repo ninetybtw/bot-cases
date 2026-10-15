@@ -231,7 +231,7 @@ class Core:
             "price_cents": price,
             "sell_cents": rules.quick_sell(price),
             "drop_price_cents": row["drop_price"],
-            "one_in": game.one_in(rules.case_odds().get(row["tier"], 0)),
+            "one_in": game.one_in(self.catalog.item_chance(row["catalog_id"], (row["origin"] or "")[5:] if (row["origin"] or "").startswith("case:") else None)),
             "origin": row["origin"],
             "created_at": row["created_at"],
             "state": row["state"],

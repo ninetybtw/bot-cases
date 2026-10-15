@@ -109,7 +109,6 @@ class Players:
         seed = self._seed(user_id)
         energy, ts = self._energy(p)
         cfg_e = rules.CFG["energy"]
-        odds, _ = game.spin_odds(p["since_epic"], p["since_legendary"])
         main, over = self._used_slots(user_id)
         per = rules.CFG["xp"]["per_level"]
         change_after = (u["country_set_at"] or 0) + rules.CFG["currency"]["change_days"] * 86400
@@ -130,14 +129,12 @@ class Players:
             "attempts": p["paid_attempts"],
             "bonus_spins": p["bonus_spins"],
             "coin_spins_left": max(0, self.coin_spins_limit(p["level"]) - self._counter(user_id, "coin")),
-            "level_spins_left": max(0, rules.CFG["spin"]["levels_per_day"] - self._counter(user_id, "lvl")),
-            "luck": {"mult": p["luck_mult"], "spins_left": p["luck_left"]} if p["luck_left"] else None,
-            "pity": {
-                "epic_in": rules.CFG["pity"]["epic_plus"]["hard"] - p["since_epic"],
-                "legend_in": rules.CFG["pity"]["legend_plus"]["hard"] - p["since_legendary"],
-                "epic_chance_pct": round(game.group_chance(odds, "epic") * 100, 2),
-                "legend_chance_pct": round(game.group_chance(odds, "legendary") * 100, 2),
-            },
+            "luck": {"mult": p["luck_mult"], "spins_left": p["luck_left"],
+                     "max_case_cents": rules.CFG["luck"]["max_case_cents"],
+                     "max_return": game.luck_max_return(p["luck_mult"]),
+                     "cases": {c["id"]: round(game.lucky_weights(c, self.catalog.items, p["luck_mult"])[1], 1)
+                               for c in self.catalog.case_list if self.luck_applies(c)}} if p["luck_left"] else None,
+            "pity": {cid: v for cid in self.catalog.cases if (v := self.case_pity(user_id, cid))},
             "slots": {"used": main, "total": self._slots(p), "overflow": over,
                       "overflow_max": rules.CFG["inventory"]["overflow_slots"]},
             "upgrades_left": rules.CFG["upgrader"]["per_day"] - self._counter(user_id, "upg"),

@@ -1,12 +1,16 @@
-"""Каталог CS2 с рыночными ценами в копейках игрового рубля: data/catalog.json.
+"""Каталог CS2 и свои кейсы с ценами в копейках игрового рубля: data/catalog.json.
 
-Логика reference/fill_prices.py, версия ТЗ 1.4:
-  * каталог — data/skins/cs2_skins.csv (лоты: рисунок × износ × StatTrak), фазы Doppler и картинки
-    кейсов — из ByMykel/CSGO-API;
+Цены — логика reference/fill_prices.py:
+  * каталог — data/skins/cs2_skins.csv (лоты: рисунок × износ × StatTrak), фазы Doppler — из ByMykel/CSGO-API;
   * цены — медиана Skinport, CS2 Market (market.csgo.com), по желанию Lis-Skins и выгрузки Buff;
     при 3+ источниках цены дальше чем вдвое от медианы отбрасываются;
-  * USD → рубли по курсу ЦБ РФ на день пересчёта (если ЦБ недоступен — последний известный курс);
-  * цена кейса и уровня крутки = средняя цена выпадения / 0,8, не больше ±30% к цене недельной давности.
+  * USD → рубли по курсу ЦБ РФ на день пересчёта (если ЦБ недоступен — последний известный курс).
+
+Кейсы — свои сборки как на кейс-сайтах (config/skins.json → cases.list):
+  * предметы подбираются из всего каталога по правилам кейса (оружие, категория, редкость, цена),
+    равномерно по шкале цен от дешёвых к дорогим;
+  * шанс предмета ∝ 1 / цена^alpha, внутри кейса шанс ступени = сумма шансов её предметов;
+  * цена кейса = средний дроп с учётом мягких гарантий / 0,8, не больше ±30% к цене недельной давности.
 
 Запуск раз в сутки (worker делает это сам в 04:00 МСК, если PRICE_UPDATE=1):
     python tools/build_catalog.py               # скачать цены и курс, пересобрать
@@ -30,7 +34,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from skinsbot import rules  # noqa: E402
+from skinsbot import odds, rules  # noqa: E402
 
 RAW = ROOT / "data" / "raw"
 SKINS_CSV = ROOT / "data" / "skins" / "cs2_skins.csv"
@@ -44,18 +48,8 @@ SOURCES = {
 CBR_URL = "https://www.cbr-xml-daily.ru/daily_json.js"
 CRATES_URL = "https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en/crates.json"
 
-# Кейсы первой версии (ТЗ: 6–10 популярных, дальше по кейсу в неделю).
-CASES = [
-    "Fever Case",
-    "Gallery Case",
-    "Kilowatt Case",
-    "Revolution Case",
-    "Recoil Case",
-    "Dreams & Nightmares Case",
-    "Fracture Case",
-    "Clutch Case",
-]
-TIER_BY_NAME = {v["name"]: k for k, v in rules.CFG["tiers"].items()}
+TIER_BY_NO = {str(v["no"]): k for k, v in rules.CFG["tiers"].items()}
+DROP_TIERS = set(rules.DROP_TIERS)
 
 
 def fetch(url: str, dest: Path) -> None:
@@ -133,40 +127,15 @@ def usd_rub(offline: bool) -> tuple[float, str]:
     return float(data["Valute"]["USD"]["Value"]), data["Date"][:10]
 
 
-def build(offline: bool, use_lisskins: bool, buff: Path | None) -> dict:
-    RAW.mkdir(parents=True, exist_ok=True)
-    if not offline:
-        names = ["skinport", "csmarket"] + (["lisskins"] if use_lisskins else [])
-        for name in names:
-            print(f"скачиваю цены {name}…")
-            try:
-                fetch(SOURCES[name], RAW / f"{name}.json")
-            except OSError as e:
-                print(f"  {name} недоступен: {e}")
-        if not (RAW / "crates.json").exists():
-            fetch(CRATES_URL, RAW / "crates.json")
-    rate, rate_date = usd_rub(offline)
-    quotes = load_quotes(use_lisskins, buff)
-    crates = {c["name"]: c for c in json.loads((RAW / "crates.json").read_text(encoding="utf-8")) if c.get("type") == "Case"}
-    phases = {e["id"]: e["phase"] for c in crates.values() for e in (c.get("contains_rare") or []) + c["contains"] if e.get("phase")}
-
-    rows = [r for r in csv.DictReader(SKINS_CSV.open(encoding="utf-8-sig"))
-            if r["in_case_pool"] == "true" and r["souvenir"] == "false"]
+def load_skins(quotes, rate, phases) -> tuple[dict[str, dict], dict]:
+    """Все скины каталога (без сувениров и контрабанды) с ценой каждого износа и StatTrak."""
     items: dict[str, dict] = {}
-    cases: dict[str, dict] = {}
-    for case_name in CASES:
-        crate = crates[case_name]
-        cases[crate["id"]] = {"id": crate["id"], "name": case_name, "image": crate.get("image"),
-                              "released": crate.get("first_sale_date"), "pools": {t: [] for t in rules.CASE_TIERS}}
-    case_id_by_name = {c["name"]: cid for cid, c in cases.items()}
-
     missing: list[tuple[str, str]] = []
-    sources_used = {"market": 0, "same_item": 0, "similar": 0, "ladder": 0}
-    for r in rows:
-        in_cases = [case_id_by_name[n.strip()] for n in r["cases"].split(";") if n.strip() in case_id_by_name]
-        if not in_cases:
+    used = {"market": 0, "same_item": 0, "similar": 0, "ladder": 0}
+    for r in csv.DictReader(SKINS_CSV.open(encoding="utf-8-sig")):
+        tier = TIER_BY_NO.get(r["our_tier_no"])
+        if r["souvenir"] == "true" or tier not in DROP_TIERS:
             continue
-        tier = TIER_BY_NAME[r["our_tier"]]
         sid = r["skin_id"]
         phase = phases.get(sid)
         it = items.get(sid)
@@ -179,37 +148,28 @@ def build(offline: bool, use_lisskins: bool, buff: Path | None) -> dict:
                 "id": sid, "name": name + (f" ({phase})" if phase else ""), "weapon": r["weapon"],
                 "finish": ("Ванильный" if vanilla else r["skin"]) + (f" ({phase})" if phase else ""),
                 "category": r["category"], "tier": tier, "game_rarity": r["rarity_game"],
-                "image": r["image_url"], "min_float": to_float(r["min_float"]) if not vanilla else None,
-                "max_float": to_float(r["max_float"]) if not vanilla else None,
-                "wears": [], "stattrak": False, "cases": [], "prices": {}, "estimated": [],
+                "image": r["image_url"], "min_float": None if vanilla else (to_float(r["min_float"]) or 0.0),
+                "max_float": None if vanilla else (to_float(r["max_float"]) or 1.0),
+                "wears": [], "stattrak": False, "prices": {}, "estimated": [],
             }
-            if it["min_float"] is None and not vanilla:
-                it["min_float"] = 0.0
-        for cid in in_cases:
-            if cid not in it["cases"]:
-                it["cases"].append(cid)
-                cases[cid]["pools"][tier].append(sid)
         wear = r["wear_short"] or None
         st = r["stattrak"] == "true"
         if wear and wear not in it["wears"]:
             it["wears"].append(wear)
         it["stattrak"] = it["stattrak"] or st
-        name = r["market_hash_name"]
-        variants = quotes.get(name, {})
+        variants = quotes.get(r["market_hash_name"], {})
         usd = median_price(variants.get(phase or "", [])) if phase else None
         usd = usd or median_price(variants.get("", [])) or median_price([p for v in variants.values() for p in v])
         key = rules.price_key(wear, st)
         if usd:
             it["prices"][key] = round(usd * rate * 100)
-            sources_used["market"] += 1
+            used["market"] += 1
         else:
             missing.append((sid, key))
 
     order = list(rules.wear_ranges())
     for it in items.values():
         it["wears"].sort(key=order.index)
-        if it["max_float"] is None and it["wears"]:
-            it["max_float"] = 1.0
 
     # Нет рыночной цены: от того же предмета в другом износе по запасным множителям,
     # затем медиана похожих лотов (ступень + износ + StatTrak), в крайнем случае лестница.
@@ -234,9 +194,91 @@ def build(offline: bool, use_lisskins: bool, buff: Path | None) -> dict:
             price, src = rules.CFG["ladder_cents"][it["tier"]] * mult(key), "ladder"
         it["prices"][key] = round(price)
         it["estimated"].append(key)
-        sources_used[src] += 1
+        used[src] += 1
+    # Скины без единой рыночной цены в кейсы не берём: их цена была бы выдуманной.
+    for it in items.values():
+        it["market"] = len(it["estimated"]) < len(it["prices"])
+    return items, used
 
-    # Цены кейсов и уровней: средний дроп / 0,8, не больше ±30% к цене недельной давности.
+
+def matches(it: dict, rule: dict, value: float) -> bool:
+    if rule.get("weapons") and it["weapon"] not in rule["weapons"]:
+        return False
+    if rule.get("categories") and it["category"] not in rule["categories"]:
+        return False
+    if it["category"] in rule.get("exclude_categories", []):
+        return False
+    if rule.get("tiers") and it["tier"] not in rule["tiers"]:
+        return False
+    if rule.get("min_rub") is not None and value < rule["min_rub"] * 100:
+        return False
+    if rule.get("max_rub") is not None and value > rule["max_rub"] * 100:
+        return False
+    return True
+
+
+def pick_spread(candidates: list[tuple[float, str]], n: int, taken: set[str]) -> list[str]:
+    """n предметов равномерно по шкале цен (в логарифме): от самого дешёвого до самого дорогого."""
+    import math
+
+    pool = sorted(c for c in candidates if c[1] not in taken)
+    if len(pool) <= n:
+        return [sid for _, sid in pool]
+    lo, hi = math.log(pool[0][0]), math.log(pool[-1][0])
+    chosen: list[str] = []
+    for k in range(n):
+        target = lo + (hi - lo) * k / (n - 1)
+        best = min((c for c in pool if c[1] not in chosen), key=lambda c: abs(math.log(c[0]) - target))
+        chosen.append(best[1])
+    return chosen
+
+
+def build_case(spec: dict, items: dict[str, dict], values: dict[str, float]) -> dict:
+    alpha = rules.CFG["cases"]["weight_alpha"]
+    chosen: list[str] = []
+    for rule in spec["rules"]:
+        cands = [(values[sid], sid) for sid, it in items.items() if it["market"] and matches(it, rule, values[sid])]
+        chosen += pick_spread(cands, rule["n"], set(chosen))
+    weights = {sid: values[sid] ** (-alpha) for sid in chosen}
+    total = sum(weights.values())
+    weights = {sid: w / total for sid, w in weights.items()}
+    pools: dict[str, list[str]] = {}
+    for sid in sorted(chosen, key=lambda s: values[s]):
+        pools.setdefault(items[sid]["tier"], []).append(sid)
+    tier_odds = {t: sum(weights[s] for s in ids) for t, ids in pools.items()}
+    top = max(chosen, key=lambda s: values[s])
+    return {"id": spec["id"], "name": spec["name"], "category": spec["category"], "free": bool(spec.get("free")),
+            "image": items[top]["image"], "top_tier": items[top]["tier"], "weights": weights, "pools": pools,
+            "tier_odds": tier_odds}
+
+
+def build(offline: bool, use_lisskins: bool, buff: Path | None) -> dict:
+    RAW.mkdir(parents=True, exist_ok=True)
+    if not offline:
+        names = ["skinport", "csmarket"] + (["lisskins"] if use_lisskins else [])
+        for name in names:
+            print(f"скачиваю цены {name}…")
+            try:
+                fetch(SOURCES[name], RAW / f"{name}.json")
+            except OSError as e:
+                print(f"  {name} недоступен: {e}")
+        if not (RAW / "crates.json").exists():
+            fetch(CRATES_URL, RAW / "crates.json")
+    rate, rate_date = usd_rub(offline)
+    quotes = load_quotes(use_lisskins, buff)
+    crates = json.loads((RAW / "crates.json").read_text(encoding="utf-8"))
+    phases = {e["id"]: e["phase"] for c in crates for e in (c.get("contains_rare") or []) + (c.get("contains") or []) if e.get("phase")}
+    all_items, used = load_skins(quotes, rate, phases)
+    values = {sid: rules.item_expected_cents(it) for sid, it in all_items.items()}
+
+    cases = [build_case(spec, all_items, values) for spec in rules.CFG["cases"]["list"]]
+    in_cases = {sid for c in cases for sid in c["weights"]}
+    items = {sid: all_items[sid] for sid in sorted(in_cases)}
+    for it in items.values():
+        it.pop("market", None)
+        it["cases"] = [c["id"] for c in cases if it["id"] in c["weights"]]
+
+    # Цена кейса: средний дроп с гарантиями / 0,8, не больше ±30% к цене недельной давности.
     previous = json.loads(OUT.read_text(encoding="utf-8")) if OUT.exists() else {}
     history = previous.get("price_history", {})
     today = dt.date.today().isoformat()
@@ -249,30 +291,17 @@ def build(offline: bool, use_lisskins: bool, buff: Path | None) -> dict:
         past = [v for d, v in sorted(history.get(key, {}).items()) if d >= week_ago]
         if past:
             raw = min(max(raw, past[0] * (1 - cap)), past[0] * (1 + cap))
-        price = round(raw)
+        price = max(1, round(raw))
         hist = {d: v for d, v in history.get(key, {}).items() if d >= (dt.date.today() - dt.timedelta(days=30)).isoformat()}
         hist[today] = price
         history[key] = hist
         return price
 
-    case_list = []
-    for c in cases.values():
-        ev = rules.pool_expected_cents(rules.case_odds(), c["pools"], items)
+    for c in cases:
+        c["ev_base_cents"] = round(rules.case_expected_cents(c, items))
+        ev = rules.case_expected_cents(c, items, odds.consolidated(c["tier_odds"]))
         c["ev_cents"] = round(ev)
         c["price_cents"] = priced(c["id"], ev)
-        case_list.append(c)
-    case_list.sort(key=lambda c: c["price_cents"])
-
-    level_pools = {t: sorted({i for c in cases.values() for i in c["pools"][t]}) for t in rules.CASE_TIERS}
-    levels = []
-    for key, lvl in rules.CFG["levels"].items():
-        if lvl["odds"] is None:
-            continue
-        odds = rules.level_odds(key)
-        pools = {t: level_pools[t] for t in odds}
-        ev = rules.pool_expected_cents(odds, pools, items)
-        levels.append({"id": key, "name": lvl["name"], "what": lvl["what"], "from": lvl["from"],
-                       "ev_cents": round(ev), "price_cents": priced(f"level:{key}", ev), "pools": pools})
 
     return {
         "generated_at": int(time.time()),
@@ -280,9 +309,8 @@ def build(offline: bool, use_lisskins: bool, buff: Path | None) -> dict:
         "usd_rub": rate,
         "usd_rub_date": rate_date,
         "sources": {"catalog": "data/skins/cs2_skins.csv", "prices": "Skinport, CS2 Market" + (", Lis-Skins" if use_lisskins else "") + (", Buff" if buff else "")},
-        "price_sources": sources_used,
-        "cases": case_list,
-        "levels": levels,
+        "price_sources": used,
+        "cases": cases,
         "items": items,
         "price_history": history,
     }
@@ -300,8 +328,9 @@ def main() -> None:
     tmp.replace(OUT)
     print(f"курс ЦБ {catalog['usd_rub']} ₽ за $ на {catalog['usd_rub_date']}")
     print(f"кейсов: {len(catalog['cases'])}, предметов: {len(catalog['items'])}, цены: {catalog['price_sources']}")
-    for c in catalog["cases"] + catalog["levels"]:
-        print(f"  {c['name']:<28} {c['price_cents'] / 100:>10.2f} ₽  средний дроп {c['ev_cents'] / 100:.2f} ₽")
+    for c in catalog["cases"]:
+        odds_txt = " ".join(f"{t}:{p * 100:.1f}" for t, p in c["tier_odds"].items())
+        print(f"  {c['name']:<16} {c['price_cents'] / 100:>10.2f} ₽  предметов {len(c['weights']):>2}  {odds_txt}")
 
 
 if __name__ == "__main__":

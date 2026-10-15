@@ -54,8 +54,8 @@ def build_dispatcher(game: Game, config: Config) -> Dispatcher:
         game.ensure_user(u.id, u.first_name or "", u.username, u.language_code, referrer)
         await message.answer(
             f"<b>{config.bot_name}</b>\n\n"
-            f"Открывай настоящие кейсы CS2: {len(game.catalog.case_list)} кейсов и уровни от Редкой до Элитной, "
-            "ножи и перчатки, износ и StatTrak™, цены с рынка.\n\n"
+            f"Открывай кейсы со скинами CS2: {len(game.catalog.case_list)} своих сборок от «Халявы» до «Мажора», "
+            "апгрейды, контракты с любой редкостью, ножи и перчатки, цены с рынка.\n\n"
             f"🎁 У тебя {rules.CFG['energy']['start']} бесплатных спина. Жми «Играть»!",
             reply_markup=play_keyboard(),
         )

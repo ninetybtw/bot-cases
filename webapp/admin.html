@@ -60,7 +60,7 @@
     async economy() {
       const d = await call("GET", "/economy?days=14");
       view.innerHTML = `${d.alert ? '<p class="alert">Приток больше слива на 10% две недели подряд. Рычаги: цены кейсов, доля продажи системе, комиссия рынка, налог на копилку. Шансы — последний рычаг.</p>' : ""}
-        <p class="muted">Курс ЦБ ${d.usd_rub} ₽/$ · самый дешёвый кейс ${rub(d.unit_cents)} · цель: бесплатный игрок набирает не больше чем на 5 платных спинов в сутки.</p>
+        <p class="muted">Курс ЦБ ${d.usd_rub} ₽/$ · опорный кейс ${rub(d.unit_cents)} · цель: бесплатный игрок набирает не больше чем на 5 платных спинов в сутки.</p>
         <div class="box"><table><tr><th>День</th><th>Приток</th><th>Слив</th><th>Комиссия рынка</th><th>Активных</th><th>Приток без продаж на игрока</th><th>Платных спинов</th></tr>
         ${d.days.map((x) => `<tr><td>${x.day}</td><td>${rub(x.faucet)}</td><td>${rub(x.sink)}</td><td>${rub(x.market_fee)}</td><td>${x.active}</td><td>${rub(x.faucet_per_active_cents)}</td><td class="${x.paid_spins_per_active > 5 ? "bad" : "ok"}">${x.paid_spins_per_active}</td></tr>`).join("")}</table></div>
         <h3>Возврат по шкалам</h3><div class="box"><table><tr><th>Кейс или уровень</th><th>Возврат</th></tr>

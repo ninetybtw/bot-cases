@@ -17,6 +17,12 @@ STATUS = {"UNAUTHORIZED": 401, "RATE_LIMIT": 429, "NOT_FOUND": 404, "CONFLICT": 
           "CONFIG_CHANGED": 409, "DISABLED": 403, "FORBIDDEN": 403}
 
 
+def game_contract_table() -> list[dict]:
+    ms = rules.CFG["contracts"]["multipliers"]
+    w = sum(x for _, x in ms)
+    return [{"mult": m, "p": x / w} for m, x in ms]
+
+
 def public_config(game: Game) -> dict:
     c = rules.CFG
     cat = game.catalog
@@ -27,37 +33,34 @@ def public_config(game: Game) -> dict:
         return {"id": item_id, "name": it["name"], "image_url": it["image"], "tier": it["tier"],
                 "min_cents": min(prices), "max_cents": max(prices)}
 
-    levels = []
-    for key, lvl in c["levels"].items():
-        if key == "common":
-            levels.append({"id": key, "name": lvl["name"], "what": lvl["what"], "from": lvl["from"], "odds": None})
-            continue
-        lv = cat.levels[key]
-        odds = rules.level_odds(key)
-        goal = lvl["goal"]
-        levels.append({"id": key, "name": lvl["name"], "what": lvl["what"], "from": lvl["from"], "price_cents": lv["price_cents"],
-                       "ev_cents": lv["ev_cents"], "odds": [{"tier": t, "p": p} for t, p in odds.items()],
-                       "goal": {"label": goal["label"], "p": sum(p for t, p in odds.items() if rules.at_least(t, goal["from"]))},
-                       "pool_sizes": {t: len(ids) for t, ids in lv["pools"].items()}})
-    case_odds = rules.case_odds()
+    def case_view(cs):
+        items = sorted(((cs["weights"][i], i) for ids in cs["pools"].values() for i in ids),
+                       key=lambda x: (-rules.rank(cat.items[x[1]]["tier"]), x[0]))
+        return {"id": cs["id"], "name": cs["name"], "category": cs["category"], "image_url": cs["image"],
+                "top_tier": cs["top_tier"], "price_cents": cs["price_cents"], "ev_cents": cs["ev_cents"],
+                "free": cs["id"] == cat.free_case_id, "luck": cs["price_cents"] <= c["luck"]["max_case_cents"],
+                "tier_odds": cs["tier_odds"],
+                "items": [{**brief(i), "p": w, "one_in": max(1, round(1 / w))} for w, i in items]}
+
     return {
         "version": rules.VERSION,
         "generated_at": cat.generated_at,
         "usd_rub": cat.usd_rub,
         "tiers": c["tiers"],
         "currency": c["currency"],
-        "case_odds": [{"tier": t, "p": p, "one_in": max(1, round(1 / p))} for t, p in case_odds.items()],
-        "cases": [{"id": cs["id"], "name": cs["name"], "image_url": cs["image"], "price_cents": cs["price_cents"],
-                   "ev_cents": cs["ev_cents"], "free": cs["id"] == cat.free_case_id,
-                   "pools": {t: [brief(i) for i in ids] for t, ids in cs["pools"].items()}} for cs in cat.case_list],
-        "levels": levels,
+        "categories": c["cases"]["categories"],
+        "cases": [case_view(cs) for cs in cat.case_list],
+        "banners": {"label": c["banners"]["label"], "list": c["banners"]["list"]} if c["banners"]["enabled"] else None,
+        "sell_quick": c["sell_quick"]["groups"],
+        "luck": {k: v for k, v in c["luck"].items() if k != "note"},
         "wear": c["wear"],
         "stattrak": c["stattrak"],
         "pity": c["pity"],
         "spin": c["spin"],
         "energy": c["energy"],
         "upgrader": c["upgrader"],
-        "contracts": c["contracts"],
+        "contracts": {"min_items": c["contracts"]["min_items"], "max_items": c["contracts"]["max_items"],
+                      "max_total_cents": cat.contract_max_total(), "table": game_contract_table()},
         "market": {k: v for k, v in c["market"].items()},
         "trades": c["trades"],
         "wheel": {"daily": c["wheel"]["daily"], "weekly": c["wheel"]["weekly"], "weekly_unlock_days": c["wheel"]["weekly_unlock_days"]},
@@ -177,7 +180,7 @@ def create_app(game: Game, config: Config, bot=None, share=None) -> web.Applicat
         uid = current_user(request)
         limit(spin_hits[uid], rl["spins_per_second"])
         b = await body(request)
-        return j(game.spin(uid, b.get("case_id"), b.get("level"), b.get("source", "coin"), int(b.get("count", 1)),
+        return j(game.spin(uid, b.get("case_id"), b.get("source", "coin"), int(b.get("count", 1)),
                            bool(b.get("confirmed")), key(request)))
 
     @r.get("/v1/fair")
@@ -227,12 +230,26 @@ def create_app(game: Game, config: Config, bot=None, share=None) -> web.Applicat
         uid = current_user(request)
         return j(game.sell_cheaper(uid, int((await body(request))["max_cents"])))
 
+    @r.get("/v1/items/sell-groups")
+    async def sell_groups(request):
+        return j({"groups": game.sell_groups(current_user(request))})
+
+    @r.post("/v1/items/sell-group/quote")
+    async def sell_group(request):
+        uid = current_user(request)
+        return j(game.sell_group_quote(uid, str((await body(request))["group"])))
+
     @r.post("/v1/showcase")
     async def showcase(request):
         uid = current_user(request)
         return j(game.set_showcase(uid, [int(i) for i in (await body(request)).get("item_ids", [])]))
 
     # --- контракты и апгрейдер ---------------------------------------------------------------------
+    @r.post("/v1/contracts/quote")
+    async def contract_quote(request):
+        uid = current_user(request)
+        return j(game.contract_quote(uid, [int(i) for i in (await body(request))["item_ids"]]))
+
     @r.post("/v1/contracts")
     async def contracts(request):
         uid = current_user(request)
@@ -373,6 +390,10 @@ def create_app(game: Game, config: Config, bot=None, share=None) -> web.Applicat
     async def equip(request):
         uid = current_user(request)
         return j(game.equip(uid, (await body(request)).get("code")))
+
+    @r.post("/v1/banners/{id}/click")
+    async def banner_click(request):
+        return j(game.banner_click(current_user(request), request.match_info["id"]))
 
     @r.get("/v1/feed")
     async def feed(request):

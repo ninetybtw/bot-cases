@@ -1,169 +1,560 @@
 {
-  "version": "1.4.0-cs2",
+  "version": "1.5.0-cs2",
   "game": "skins",
-  "note": "Цифры игры по ТЗ v1.4, только CS2 (Standoff 2 не делаем). Деньги в копейках игрового рубля.",
-
+  "note": "Цифры игры: ТЗ v1.4, только CS2, с правками владельца 15.10.2026 (свои кейсы, контракты, удача до ×10, без паузы 3 с). Деньги в копейках игрового рубля.",
   "currency": {
     "base": "RUB",
     "game_label": "игровые",
     "show_game_label": true,
     "scale": 1,
     "countries": {
-      "RU": {"name": "Россия", "code": "RUB", "symbol": "₽", "rate": 1, "decimals": 0},
-      "BY": {"name": "Беларусь", "code": "BYN", "symbol": "Br", "rate": 0.04, "decimals": 2},
-      "KZ": {"name": "Казахстан", "code": "KZT", "symbol": "₸", "rate": 6, "decimals": 0},
-      "UZ": {"name": "Узбекистан", "code": "UZS", "symbol": "сум", "rate": 150, "decimals": 0},
-      "KG": {"name": "Кыргызстан", "code": "KGS", "symbol": "сом", "rate": 1, "decimals": 0},
-      "AM": {"name": "Армения", "code": "AMD", "symbol": "֏", "rate": 5, "decimals": 0},
-      "AZ": {"name": "Азербайджан", "code": "AZN", "symbol": "₼", "rate": 0.02, "decimals": 2},
-      "TJ": {"name": "Таджикистан", "code": "TJS", "symbol": "смн", "rate": 0.1, "decimals": 2},
-      "GE": {"name": "Грузия", "code": "GEL", "symbol": "₾", "rate": 0.03, "decimals": 2}
+      "RU": {
+        "name": "Россия",
+        "code": "RUB",
+        "symbol": "₽",
+        "rate": 1,
+        "decimals": 0
+      },
+      "BY": {
+        "name": "Беларусь",
+        "code": "BYN",
+        "symbol": "Br",
+        "rate": 0.04,
+        "decimals": 2
+      },
+      "KZ": {
+        "name": "Казахстан",
+        "code": "KZT",
+        "symbol": "₸",
+        "rate": 6,
+        "decimals": 0
+      },
+      "UZ": {
+        "name": "Узбекистан",
+        "code": "UZS",
+        "symbol": "сум",
+        "rate": 150,
+        "decimals": 0
+      },
+      "KG": {
+        "name": "Кыргызстан",
+        "code": "KGS",
+        "symbol": "сом",
+        "rate": 1,
+        "decimals": 0
+      },
+      "AM": {
+        "name": "Армения",
+        "code": "AMD",
+        "symbol": "֏",
+        "rate": 5,
+        "decimals": 0
+      },
+      "AZ": {
+        "name": "Азербайджан",
+        "code": "AZN",
+        "symbol": "₼",
+        "rate": 0.02,
+        "decimals": 2
+      },
+      "TJ": {
+        "name": "Таджикистан",
+        "code": "TJS",
+        "symbol": "смн",
+        "rate": 0.1,
+        "decimals": 2
+      },
+      "GE": {
+        "name": "Грузия",
+        "code": "GEL",
+        "symbol": "₾",
+        "rate": 0.03,
+        "decimals": 2
+      }
     },
-    "language_to_country": {"be": "BY", "kk": "KZ", "uz": "UZ", "ky": "KG", "hy": "AM", "az": "AZ", "tg": "TJ", "ka": "GE"},
+    "language_to_country": {
+      "be": "BY",
+      "kk": "KZ",
+      "uz": "UZ",
+      "ky": "KG",
+      "hy": "AM",
+      "az": "AZ",
+      "tg": "TJ",
+      "ka": "GE"
+    },
     "default_country": "RU",
     "change_days": 30
   },
-
   "tiers": {
-    "common":    {"no": 1, "name": "Обычный",      "icon": "○", "color": "#9aa1ab"},
-    "uncommon":  {"no": 2, "name": "Необычный",    "icon": "◇", "color": "#5fbf4a"},
-    "rare":      {"no": 3, "name": "Редкий",       "icon": "◆", "color": "#4b7bff", "cs2": "Mil-Spec"},
-    "epic":      {"no": 4, "name": "Эпик",         "icon": "⬢", "color": "#9a52ff", "cs2": "Restricted"},
-    "legendary": {"no": 5, "name": "Легендарный",  "icon": "★", "color": "#e04fd2", "cs2": "Classified"},
-    "mythic":    {"no": 6, "name": "Мифический",   "icon": "✹", "color": "#ec3b3b", "cs2": "Covert"},
-    "secret":    {"no": 7, "name": "Секретный",    "icon": "♛", "color": "#f2c440", "cs2": "★ Нож или перчатки"},
-    "divine":    {"no": 8, "name": "Божественный", "icon": "✺", "color": "#ffffff"},
-    "exclusive": {"no": 9, "name": "Эксклюзив",    "icon": "◈", "color": "#111111", "cs2": "Contraband"}
+    "common": {
+      "no": 1,
+      "name": "Ширпотреб",
+      "icon": "○",
+      "color": "#9aa1ab",
+      "cs2": "Consumer"
+    },
+    "uncommon": {
+      "no": 2,
+      "name": "Промышленное",
+      "icon": "◇",
+      "color": "#5fbf4a",
+      "cs2": "Industrial"
+    },
+    "rare": {
+      "no": 3,
+      "name": "Армейское",
+      "icon": "◆",
+      "color": "#4b7bff",
+      "cs2": "Mil-Spec"
+    },
+    "epic": {
+      "no": 4,
+      "name": "Запрещённое",
+      "icon": "⬢",
+      "color": "#9a52ff",
+      "cs2": "Restricted"
+    },
+    "legendary": {
+      "no": 5,
+      "name": "Засекреченное",
+      "icon": "★",
+      "color": "#e04fd2",
+      "cs2": "Classified"
+    },
+    "mythic": {
+      "no": 6,
+      "name": "Тайное",
+      "icon": "✹",
+      "color": "#ec3b3b",
+      "cs2": "Covert"
+    },
+    "secret": {
+      "no": 7,
+      "name": "Нож или перчатки",
+      "icon": "♛",
+      "color": "#f2c440",
+      "cs2": "★ Rare Special"
+    },
+    "divine": {
+      "no": 8,
+      "name": "Божественное",
+      "icon": "✺",
+      "color": "#ffffff"
+    },
+    "exclusive": {
+      "no": 9,
+      "name": "Контрабанда",
+      "icon": "◈",
+      "color": "#111111",
+      "cs2": "Contraband"
+    }
   },
-
-  "ladder_cents": {"common": 1000, "uncommon": 3000, "rare": 10000, "epic": 40000, "legendary": 200000, "mythic": 1000000, "secret": 5000000},
-
+  "ladder_cents": {
+    "common": 1000,
+    "uncommon": 3000,
+    "rare": 10000,
+    "epic": 40000,
+    "legendary": 200000,
+    "mythic": 1000000,
+    "secret": 5000000
+  },
   "target_return": 0.8,
-  "return_corridor": [0.78, 0.82],
-  "max_weekly_price_change": 0.3,
-
-  "case_odds": {"rare": 79.92, "epic": 15.98, "legendary": 3.2, "mythic": 0.64, "secret": 0.26},
-
-  "levels": {
-    "common":    {"name": "Обычная",     "what": "любой обычный кейс CS2", "from": "rare", "odds": null},
-    "rare":      {"name": "Редкая",      "what": "от Mil-Spec",   "from": "rare",      "odds": {"rare": 82.15, "epic": 15.31, "legendary": 2.18, "mythic": 0.31, "secret": 0.05}, "goal": {"from": "legendary", "label": "Classified+"}},
-    "epic":      {"name": "Эпическая",   "what": "от Restricted", "from": "epic",      "odds": {"epic": 87.35, "legendary": 11.07, "mythic": 1.4, "secret": 0.18}, "goal": {"from": "legendary", "label": "Classified+"}},
-    "legendary": {"name": "Легендарная", "what": "от Classified", "from": "legendary", "odds": {"legendary": 95.83, "mythic": 4.0, "secret": 0.17}, "goal": {"from": "mythic", "label": "Covert+"}},
-    "elite":     {"name": "Элитная",     "what": "от Covert",     "from": "mythic",    "odds": {"mythic": 95.0, "secret": 5.0}, "goal": {"from": "secret", "label": "Нож или перчатки"}}
-  },
-  "level_checks": {"min_bottom_pct": 50, "min_price_vs_bottom": 1.25},
-
-  "wear": [
-    ["FN", 0.00, 0.07, 3, 1.5],
-    ["MW", 0.07, 0.15, 24, 1.2],
-    ["FT", 0.15, 0.38, 33, 1.0],
-    ["WW", 0.38, 0.45, 24, 0.85],
-    ["BS", 0.45, 1.00, 16, 0.7]
+  "return_corridor": [
+    0.78,
+    0.82
   ],
-  "stattrak": {"pct": 10, "fallback_mult": 1.3},
-
-  "pity": {
-    "epic_plus":   {"from": "epic",      "soft": 51,  "step_pct": 5, "hard": 60},
-    "legend_plus": {"from": "legendary", "soft": 281, "step_pct": 5, "hard": 300}
+  "max_weekly_price_change": 0.3,
+  "wear": [
+    [
+      "FN",
+      0.0,
+      0.07,
+      3,
+      1.5
+    ],
+    [
+      "MW",
+      0.07,
+      0.15,
+      24,
+      1.2
+    ],
+    [
+      "FT",
+      0.15,
+      0.38,
+      33,
+      1.0
+    ],
+    [
+      "WW",
+      0.38,
+      0.45,
+      24,
+      0.85
+    ],
+    [
+      "BS",
+      0.45,
+      1.0,
+      16,
+      0.7
+    ]
+  ],
+  "stattrak": {
+    "pct": 10,
+    "fallback_mult": 1.3
   },
-  "luck": {"donors": 2, "stack": false},
-
+  "pity": {
+    "epic_plus": {
+      "from": "epic",
+      "soft": 51,
+      "step_pct": 5,
+      "hard": 60
+    },
+    "legend_plus": {
+      "from": "legendary",
+      "soft": 281,
+      "step_pct": 5,
+      "hard": 300
+    }
+  },
+  "luck": {
+    "max_boosted_share": 0.95,
+    "max_case_cents": 50000,
+    "max_return": {
+      "1.5": 1.15,
+      "2": 1.35,
+      "3": 1.6,
+      "5": 2.0,
+      "10": 2.8
+    },
+    "stack": false,
+    "note": "Удача ×N: скины дороже цены кейса выпадают в N раз чаще, остальные реже пропорционально. Вместе дорогие не больше max_boosted_share. Средний возврат кейса с удачей не больше max_return для этого множителя: если вышло бы больше, множитель на этом кейсе снижается до границы, и кейс показывает, какой действует. Работает на кейсах до max_case_cents: так ×10 за сутки даёт не больше 10 спинов × 500 ₽ × (2,8 − 0,8) ≈ 10 000 ₽ сверх обычного."
+  },
   "spin": {
-    "counts": [1, 3, 5, 10],
+    "counts": [
+      1,
+      3,
+      5,
+      10
+    ],
     "confirm_from_cents": 300000,
     "confirm_balance_share": 0.3,
-    "confirm_pause_s": 3,
+    "confirm_pause_s": 0,
     "coin_per_day_base": 30,
     "coin_per_level": 1,
     "coin_per_day_max": 60,
-    "levels_per_day": 20,
     "break_reminder_spins": 50
   },
-  "energy": {"max": 3, "regen_minutes": 180, "start": 3},
-  "start_balance_cases": 5,
-  "xp": {"per_spin": 10, "per_level": 100},
-
-  "inventory": {"slots": 200, "slots_vip_bonus": 100, "slots_max": 1000, "overflow_slots": 20, "overflow_hours": 48},
-  "sell_system_pct": 60,
-  "undo_sell": {"minutes": 10, "per_day": 5},
-
-  "contracts": {"inputs": 5, "guaranteed_up_to": "rare", "success_pct": 70,
-                "next": {"rare": "epic", "epic": "legendary", "legendary": "mythic", "mythic": "secret"}},
-
-  "upgrader": {"k": 0.8, "max_items": 3, "fail_parts_pct": 10, "fail_bonus_pct": 3, "max_bonus_pct": 3, "bonus_mode": "relative_once",
-               "per_day": 10, "max_share_of_collection": 0.5, "confirm_from": "epic", "confirm_pause_s": 3,
-               "max_chance_pct": 80, "multipliers": [1.5, 2, 3, 5, 10]},
-
-  "market": {
-    "fee_pct": 10, "fee_vip_pct": 5, "band_pct": [50, 150], "lots_max": 20, "lot_days": 3,
-    "new_account_hours": 24, "hold_hours": 24, "orders_max": 20,
-    "stars": {"enabled": false, "seller_pct": 80, "fee_pct": 20, "fee_vip_pct": 15}
+  "energy": {
+    "max": 3,
+    "regen_minutes": 180,
+    "start": 3
   },
-  "trades": {"new_account_hours": 24, "max_value_gap_pct": 50, "per_pair_week": 3, "expire_hours": 24, "max_items": 5},
-
+  "start_balance_cases": 5,
+  "xp": {
+    "per_spin": 10,
+    "per_level": 100
+  },
+  "inventory": {
+    "slots": 200,
+    "slots_vip_bonus": 100,
+    "slots_max": 1000,
+    "overflow_slots": 20,
+    "overflow_hours": 48
+  },
+  "sell_system_pct": 60,
+  "undo_sell": {
+    "minutes": 10,
+    "per_day": 5
+  },
+  "contracts": {
+    "min_items": 3,
+    "max_items": 10,
+    "multipliers": [
+      [
+        0.25,
+        28
+      ],
+      [
+        0.5,
+        25.5
+      ],
+      [
+        0.75,
+        18.5
+      ],
+      [
+        1.0,
+        12
+      ],
+      [
+        1.5,
+        8.5
+      ],
+      [
+        2.0,
+        4.6
+      ],
+      [
+        3.0,
+        2.4
+      ],
+      [
+        5.0,
+        0.8
+      ],
+      [
+        10.0,
+        0.2
+      ]
+    ],
+    "note": "Как trade-up в CS2, но редкость входов любая: сумма входов × множитель = цена результата; float результата = min + средний float входов × (max − min); StatTrak, если все входы StatTrak."
+  },
+  "upgrader": {
+    "k": 0.8,
+    "max_items": 3,
+    "fail_parts_pct": 10,
+    "fail_bonus_pct": 3,
+    "max_bonus_pct": 3,
+    "bonus_mode": "relative_once",
+    "per_day": 10,
+    "confirm_from": "epic",
+    "confirm_pause_s": 0,
+    "max_chance_pct": 80,
+    "multipliers": [
+      1.5,
+      2,
+      3,
+      5,
+      10
+    ]
+  },
+  "market": {
+    "fee_pct": 10,
+    "fee_vip_pct": 5,
+    "band_pct": [
+      50,
+      150
+    ],
+    "lots_max": 20,
+    "lot_days": 3,
+    "new_account_hours": 24,
+    "hold_hours": 24,
+    "orders_max": 20,
+    "stars": {
+      "enabled": false,
+      "seller_pct": 80,
+      "fee_pct": 20,
+      "fee_vip_pct": 15
+    }
+  },
+  "trades": {
+    "new_account_hours": 24,
+    "max_value_gap_pct": 50,
+    "per_pair_week": 3,
+    "expire_hours": 24,
+    "max_items": 5
+  },
   "wheel": {
     "daily": [
-      {"id": "c05", "label": "0,5 кейса", "cases": 0.5, "p": 55},
-      {"id": "c1",  "label": "1 кейс",    "cases": 1,   "p": 25},
-      {"id": "c25", "label": "2,5 кейса", "cases": 2.5, "p": 12},
-      {"id": "spin1", "label": "1 спин",  "spins": 1,   "p": 6},
-      {"id": "c10", "label": "10 кейсов", "cases": 10,  "p": 2}
+      {
+        "id": "c05",
+        "label": "0,5 кейса",
+        "cases": 0.5,
+        "p": 55
+      },
+      {
+        "id": "c1",
+        "label": "1 кейс",
+        "cases": 1,
+        "p": 25
+      },
+      {
+        "id": "c25",
+        "label": "2,5 кейса",
+        "cases": 2.5,
+        "p": 12
+      },
+      {
+        "id": "spin1",
+        "label": "1 спин",
+        "spins": 1,
+        "p": 6
+      },
+      {
+        "id": "c10",
+        "label": "10 кейсов",
+        "cases": 10,
+        "p": 2
+      }
     ],
     "weekly_unlock_days": 5,
     "weekly": [
-      {"id": "c5",   "label": "5 кейсов",  "cases": 5,  "p": 45},
-      {"id": "c10",  "label": "10 кейсов", "cases": 10, "p": 30},
-      {"id": "spin3", "label": "3 спина",  "spins": 3,  "p": 15},
-      {"id": "drop", "label": "Эпик или выше", "drop_from": "epic", "p": 8},
-      {"id": "cosm", "label": "Рамка недели", "cosmetic": "frame_week", "p": 2}
+      {
+        "id": "c5",
+        "label": "5 кейсов",
+        "cases": 5,
+        "p": 45
+      },
+      {
+        "id": "c10",
+        "label": "10 кейсов",
+        "cases": 10,
+        "p": 30
+      },
+      {
+        "id": "spin3",
+        "label": "3 спина",
+        "spins": 3,
+        "p": 15
+      },
+      {
+        "id": "drop",
+        "label": "Запрещённое и выше",
+        "drop_from": "epic",
+        "p": 8
+      },
+      {
+        "id": "cosm",
+        "label": "Рамка недели",
+        "cosmetic": "frame_week",
+        "p": 2
+      }
     ]
   },
-
   "quests": {
     "daily": [
-      {"code": "spin3",  "title": "Открой 3 кейса",     "target": 3, "reward_cases": 0.4, "tickets": 1},
-      {"code": "sell1",  "title": "Продай 1 дубль",     "target": 1, "reward_cases": 0.3, "tickets": 1},
-      {"code": "rating1", "title": "Загляни в рейтинг", "target": 1, "reward_cases": 0.3, "tickets": 1}
+      {
+        "code": "spin3",
+        "title": "Открой 3 кейса",
+        "target": 3,
+        "reward_cases": 0.4,
+        "tickets": 1
+      },
+      {
+        "code": "sell1",
+        "title": "Продай 1 дубль",
+        "target": 1,
+        "reward_cases": 0.3,
+        "tickets": 1
+      },
+      {
+        "code": "rating1",
+        "title": "Загляни в рейтинг",
+        "target": 1,
+        "reward_cases": 0.3,
+        "tickets": 1
+      }
     ],
     "weekly": [
-      {"code": "contract1", "title": "Сделай 1 контракт «5 в 1»", "target": 1, "reward_cases": 3, "cosmetic": "frame_contract"}
+      {
+        "code": "contract1",
+        "title": "Сделай 1 контракт",
+        "target": 1,
+        "reward_cases": 3,
+        "cosmetic": "frame_contract"
+      }
     ]
   },
-
   "raffle": {
     "draw_hour_msk": 20,
     "prizes": [
-      {"kind": "level_drop", "level": "epic", "count": 1, "label": "Дроп из Эпической"},
-      {"kind": "spins", "n": 3, "count": 3, "label": "3 бесплатных спина"},
-      {"kind": "cases", "cases": 2, "count": 6, "label": "2 кейса игровыми"}
+      {
+        "kind": "case_drop",
+        "count": 1,
+        "label": "Дроп из кейса «Засекреченный»",
+        "case": "classified"
+      },
+      {
+        "kind": "spins",
+        "n": 3,
+        "count": 3,
+        "label": "3 бесплатных спина"
+      },
+      {
+        "kind": "cases",
+        "cases": 2,
+        "count": 6,
+        "label": "2 кейса игровыми"
+      }
     ]
   },
-
-  "duels": {"casual": {"per_day": 5, "items": 3, "rand": [0.85, 1.15], "win_cases": 0.2, "expire_hours": 24}},
-
-  "referral": {
-    "qualify_spins": 10, "invitee_spins": 3, "per_day_max": 20,
-    "rewards": {
-      "1":  {"spins": 3},
-      "5":  {"cases": 3, "cosmetic": "frame_friends"},
-      "10": {"cases": 10, "cosmetic": "effect_friends"},
-      "25": {"cosmetic": "badge_ambassador"}
+  "duels": {
+    "casual": {
+      "per_day": 5,
+      "items": 3,
+      "rand": [
+        0.85,
+        1.15
+      ],
+      "win_cases": 0.2,
+      "expire_hours": 24
     }
   },
-
-  "cosmetics": {
-    "frame_week":      {"kind": "frame",  "tier": "epic",      "title": "Рамка недели"},
-    "frame_contract":  {"kind": "frame",  "tier": "rare",      "title": "Рамка мастера контрактов"},
-    "frame_friends":   {"kind": "frame",  "tier": "epic",      "title": "Рамка друзей"},
-    "effect_friends":  {"kind": "effect", "tier": "legendary", "title": "Эффект «Свои»"},
-    "badge_ambassador": {"kind": "badge", "tier": "exclusive", "title": "Амбассадор"},
-    "badge_vip":       {"kind": "badge",  "tier": "legendary", "title": "VIP"}
+  "referral": {
+    "qualify_spins": 10,
+    "invitee_spins": 3,
+    "per_day_max": 20,
+    "rewards": {
+      "1": {
+        "spins": 3
+      },
+      "5": {
+        "cases": 3,
+        "cosmetic": "frame_friends"
+      },
+      "10": {
+        "cases": 10,
+        "cosmetic": "effect_friends"
+      },
+      "25": {
+        "cosmetic": "badge_ambassador"
+      }
+    }
   },
-
-  "piggy_tax": {"above_cents": 5000000, "pct_day": 1},
-
-  "notifications": {"per_day": 2, "quiet_from": 21, "quiet_to": 8},
-
+  "cosmetics": {
+    "frame_week": {
+      "kind": "frame",
+      "tier": "epic",
+      "title": "Рамка недели"
+    },
+    "frame_contract": {
+      "kind": "frame",
+      "tier": "rare",
+      "title": "Рамка мастера контрактов"
+    },
+    "frame_friends": {
+      "kind": "frame",
+      "tier": "epic",
+      "title": "Рамка друзей"
+    },
+    "effect_friends": {
+      "kind": "effect",
+      "tier": "legendary",
+      "title": "Эффект «Свои»"
+    },
+    "badge_ambassador": {
+      "kind": "badge",
+      "tier": "exclusive",
+      "title": "Амбассадор"
+    },
+    "badge_vip": {
+      "kind": "badge",
+      "tier": "legendary",
+      "title": "VIP"
+    }
+  },
+  "piggy_tax": {
+    "above_cents": 5000000,
+    "pct_day": 1
+  },
+  "notifications": {
+    "per_day": 2,
+    "quiet_from": 21,
+    "quiet_to": 8
+  },
   "stars": {
     "shop_enabled": false,
     "month_cap": 500,
@@ -172,20 +563,545 @@
     "attempts_buy_per_day": 50,
     "vip_daily_attempts": 2,
     "products": {
-      "attempts_5":  {"title": "Попытки ×5",  "stars": 25,  "grants": {"attempts": 5}},
-      "attempts_20": {"title": "Попытки ×20", "stars": 89,  "grants": {"attempts": 20}},
-      "attempts_50": {"title": "Попытки ×50", "stars": 199, "grants": {"attempts": 50}},
-      "luck_15":     {"title": "Удача ×1,5 на 10 спинов", "stars": 29, "grants": {"luck": {"mult": 1.5, "spins": 10}}},
-      "luck_2":      {"title": "Удача ×2 на 10 спинов",   "stars": 49, "grants": {"luck": {"mult": 2, "spins": 10}}, "limits": {"per_day": 3}},
-      "vip_7":       {"title": "VIP на 7 дней",  "stars": 79,  "grants": {"vip_days": 7}},
-      "vip_30":      {"title": "VIP на 30 дней", "stars": 249, "grants": {"vip_days": 30}},
-      "slots_100":   {"title": "+100 мест в коллекции", "stars": 99, "grants": {"slots": 100}, "limits": {"max_times": 3}},
-      "start_pack":  {"title": "Набор «Старт»: VIP 7 дней, Удача ×2, 20 попыток", "stars": 169,
-                      "grants": {"vip_days": 7, "luck": {"mult": 2, "spins": 10}, "attempts": 20}, "limits": {"once": true}}
+      "attempts_5": {
+        "title": "Попытки ×5",
+        "stars": 25,
+        "grants": {
+          "attempts": 5
+        }
+      },
+      "attempts_20": {
+        "title": "Попытки ×20",
+        "stars": 89,
+        "grants": {
+          "attempts": 20
+        }
+      },
+      "attempts_50": {
+        "title": "Попытки ×50",
+        "stars": 199,
+        "grants": {
+          "attempts": 50
+        }
+      },
+      "luck_15": {
+        "title": "Удача ×1,5 на 10 спинов",
+        "stars": 29,
+        "grants": {
+          "luck": {
+            "mult": 1.5,
+            "spins": 10
+          }
+        }
+      },
+      "luck_2": {
+        "title": "Удача ×2 на 10 спинов",
+        "stars": 49,
+        "grants": {
+          "luck": {
+            "mult": 2,
+            "spins": 10
+          }
+        },
+        "limits": {
+          "per_day": 3
+        }
+      },
+      "luck_3": {
+        "title": "Удача ×3 на 10 спинов",
+        "stars": 99,
+        "grants": {
+          "luck": {
+            "mult": 3,
+            "spins": 10
+          }
+        },
+        "limits": {
+          "per_day": 3
+        }
+      },
+      "luck_5": {
+        "title": "Удача ×5 на 10 спинов",
+        "stars": 179,
+        "grants": {
+          "luck": {
+            "mult": 5,
+            "spins": 10
+          }
+        },
+        "limits": {
+          "per_day": 2
+        }
+      },
+      "luck_10": {
+        "title": "Удача ×10 на 10 спинов",
+        "stars": 349,
+        "grants": {
+          "luck": {
+            "mult": 10,
+            "spins": 10
+          }
+        },
+        "limits": {
+          "per_day": 1
+        }
+      },
+      "vip_7": {
+        "title": "VIP на 7 дней",
+        "stars": 79,
+        "grants": {
+          "vip_days": 7
+        }
+      },
+      "vip_30": {
+        "title": "VIP на 30 дней",
+        "stars": 249,
+        "grants": {
+          "vip_days": 30
+        }
+      },
+      "slots_100": {
+        "title": "+100 мест в коллекции",
+        "stars": 99,
+        "grants": {
+          "slots": 100
+        },
+        "limits": {
+          "max_times": 3
+        }
+      },
+      "start_pack": {
+        "title": "Набор «Старт»: VIP 7 дней, Удача ×2, 20 попыток",
+        "stars": 169,
+        "grants": {
+          "vip_days": 7,
+          "luck": {
+            "mult": 2,
+            "spins": 10
+          },
+          "attempts": 20
+        },
+        "limits": {
+          "once": true
+        }
+      }
     }
   },
-
-  "fairness": {"scheme": "commit-reveal", "server_seed_bytes": 32, "roll": "HMAC-SHA256(server_seed, client_seed:nonce:i), 52 бита / 2^52", "history": 50},
-
-  "rate_limit": {"per_second": 10, "spins_per_second": 2}
+  "fairness": {
+    "scheme": "commit-reveal",
+    "server_seed_bytes": 32,
+    "roll": "HMAC-SHA256(server_seed, client_seed:nonce:i), 52 бита / 2^52",
+    "history": 50
+  },
+  "rate_limit": {
+    "per_second": 10,
+    "spins_per_second": 2
+  },
+  "cases": {
+    "weight_alpha": 1.0,
+    "note": "Свои кейсы как на кейс-сайтах: предметы подбираются из всего каталога по правилам, шанс предмета ∝ 1/цена^alpha, цена кейса = средний дроп с учётом гарантий / target_return.",
+    "categories": [
+      {
+        "id": "popular",
+        "name": "Популярные"
+      },
+      {
+        "id": "weapons",
+        "name": "Оружие"
+      },
+      {
+        "id": "rarity",
+        "name": "По редкости"
+      },
+      {
+        "id": "knives",
+        "name": "Ножи и перчатки"
+      },
+      {
+        "id": "premium",
+        "name": "Премиум"
+      }
+    ],
+    "list": [
+      {
+        "id": "freebie",
+        "name": "Халява",
+        "category": "popular",
+        "free": true,
+        "rules": [
+          {
+            "exclude_categories": [
+              "Knives",
+              "Gloves"
+            ],
+            "min_rub": 2,
+            "max_rub": 120,
+            "n": 14
+          }
+        ]
+      },
+      {
+        "id": "rookie",
+        "name": "Новичок",
+        "category": "popular",
+        "rules": [
+          {
+            "exclude_categories": [
+              "Knives",
+              "Gloves"
+            ],
+            "min_rub": 8,
+            "max_rub": 1500,
+            "n": 16
+          }
+        ]
+      },
+      {
+        "id": "friday",
+        "name": "Пятница",
+        "category": "popular",
+        "rules": [
+          {
+            "exclude_categories": [
+              "Knives",
+              "Gloves"
+            ],
+            "min_rub": 40,
+            "max_rub": 8000,
+            "n": 16
+          }
+        ]
+      },
+      {
+        "id": "lucky",
+        "name": "Фартовый",
+        "category": "popular",
+        "rules": [
+          {
+            "exclude_categories": [
+              "Knives",
+              "Gloves"
+            ],
+            "min_rub": 15,
+            "max_rub": 3000,
+            "n": 12
+          },
+          {
+            "categories": [
+              "Knives"
+            ],
+            "max_rub": 15000,
+            "n": 2
+          }
+        ]
+      },
+      {
+        "id": "ak47",
+        "name": "AK-47",
+        "category": "weapons",
+        "rules": [
+          {
+            "weapons": [
+              "AK-47"
+            ],
+            "min_rub": 10,
+            "n": 16
+          }
+        ]
+      },
+      {
+        "id": "awp",
+        "name": "AWP",
+        "category": "weapons",
+        "rules": [
+          {
+            "weapons": [
+              "AWP"
+            ],
+            "min_rub": 10,
+            "n": 16
+          }
+        ]
+      },
+      {
+        "id": "m4",
+        "name": "M4",
+        "category": "weapons",
+        "rules": [
+          {
+            "weapons": [
+              "M4A4",
+              "M4A1-S"
+            ],
+            "min_rub": 10,
+            "n": 16
+          }
+        ]
+      },
+      {
+        "id": "deagle",
+        "name": "Desert Eagle",
+        "category": "weapons",
+        "rules": [
+          {
+            "weapons": [
+              "Desert Eagle"
+            ],
+            "min_rub": 5,
+            "n": 14
+          }
+        ]
+      },
+      {
+        "id": "pistols",
+        "name": "Пистолеты",
+        "category": "weapons",
+        "rules": [
+          {
+            "categories": [
+              "Pistols"
+            ],
+            "min_rub": 5,
+            "max_rub": 20000,
+            "n": 16
+          }
+        ]
+      },
+      {
+        "id": "smg",
+        "name": "ПП и дробовики",
+        "category": "weapons",
+        "rules": [
+          {
+            "categories": [
+              "SMGs",
+              "Heavy"
+            ],
+            "min_rub": 3,
+            "max_rub": 10000,
+            "n": 16
+          }
+        ]
+      },
+      {
+        "id": "milspec",
+        "name": "Армейский",
+        "category": "rarity",
+        "rules": [
+          {
+            "tiers": [
+              "rare",
+              "epic",
+              "legendary",
+              "mythic"
+            ],
+            "exclude_categories": [
+              "Knives",
+              "Gloves"
+            ],
+            "min_rub": 5,
+            "max_rub": 30000,
+            "n": 16
+          }
+        ]
+      },
+      {
+        "id": "classified",
+        "name": "Засекреченный",
+        "category": "rarity",
+        "rules": [
+          {
+            "tiers": [
+              "legendary",
+              "mythic"
+            ],
+            "min_rub": 20,
+            "max_rub": 60000,
+            "n": 16
+          }
+        ]
+      },
+      {
+        "id": "covert",
+        "name": "Тайный",
+        "category": "rarity",
+        "rules": [
+          {
+            "tiers": [
+              "mythic"
+            ],
+            "min_rub": 100,
+            "n": 14
+          },
+          {
+            "tiers": [
+              "secret"
+            ],
+            "max_rub": 30000,
+            "n": 2
+          }
+        ]
+      },
+      {
+        "id": "knife",
+        "name": "Ножевой",
+        "category": "knives",
+        "rules": [
+          {
+            "categories": [
+              "Knives"
+            ],
+            "n": 10
+          },
+          {
+            "exclude_categories": [
+              "Knives",
+              "Gloves"
+            ],
+            "min_rub": 50,
+            "max_rub": 3000,
+            "n": 6
+          }
+        ]
+      },
+      {
+        "id": "gloves",
+        "name": "Перчатки",
+        "category": "knives",
+        "rules": [
+          {
+            "categories": [
+              "Gloves"
+            ],
+            "n": 10
+          },
+          {
+            "exclude_categories": [
+              "Knives",
+              "Gloves"
+            ],
+            "min_rub": 50,
+            "max_rub": 3000,
+            "n": 6
+          }
+        ]
+      },
+      {
+        "id": "butterfly",
+        "name": "Бабочка",
+        "category": "knives",
+        "rules": [
+          {
+            "weapons": [
+              "Butterfly Knife"
+            ],
+            "n": 8
+          },
+          {
+            "exclude_categories": [
+              "Knives",
+              "Gloves"
+            ],
+            "min_rub": 100,
+            "max_rub": 5000,
+            "n": 6
+          }
+        ]
+      },
+      {
+        "id": "major",
+        "name": "Мажор",
+        "category": "premium",
+        "rules": [
+          {
+            "min_rub": 1500,
+            "max_rub": 200000,
+            "n": 16
+          }
+        ]
+      },
+      {
+        "id": "legends",
+        "name": "Легенды",
+        "category": "premium",
+        "rules": [
+          {
+            "min_rub": 80000,
+            "n": 8
+          },
+          {
+            "exclude_categories": [
+              "Knives",
+              "Gloves"
+            ],
+            "min_rub": 500,
+            "max_rub": 20000,
+            "n": 8
+          }
+        ]
+      }
+    ],
+    "unit_case": "lucky",
+    "note_unit": "unit_case — кейс, в ценах которого считаются награды колеса, заданий и стартовый баланс."
+  },
+  "sell_quick": {
+    "groups": [
+      {
+        "id": "all",
+        "label": "Все скины"
+      },
+      {
+        "id": "common",
+        "label": "Ширпотреб"
+      },
+      {
+        "id": "uncommon",
+        "label": "Промышленное"
+      },
+      {
+        "id": "rare",
+        "label": "Армейское"
+      },
+      {
+        "id": "epic",
+        "label": "Запрещённое"
+      },
+      {
+        "id": "legendary",
+        "label": "Засекреченное"
+      },
+      {
+        "id": "mythic",
+        "label": "Тайное"
+      },
+      {
+        "id": "secret",
+        "label": "Ножи и перчатки"
+      }
+    ],
+    "note": "Быстрая продажа по 60%: всё или по редкости. Предметы под замком, на рынке, в обмене и в дуэли не продаются."
+  },
+  "banners": {
+    "enabled": true,
+    "label": "Реклама",
+    "list": [
+      {
+        "id": "news",
+        "title": "Новости бота",
+        "text": "Новые кейсы и розыгрыши первыми",
+        "url": "https://t.me/cs2_cases_news",
+        "color": "#2f8cff",
+        "erid": ""
+      },
+      {
+        "id": "partner",
+        "title": "Место для рекламы",
+        "text": "Ваш Telegram-канал здесь — пишите в поддержку",
+        "url": "https://t.me/cs2_cases_ads",
+        "color": "#e8336e",
+        "erid": ""
+      }
+    ],
+    "note": "Баннеры тг-каналов на экране кейсов. По закону о рекламе (38-ФЗ) реклама помечается «Реклама» и токеном erid. Наград за подписку на каналы не даём: правила Telegram для ботов запрещают «социальную накрутку»."
+  }
 }

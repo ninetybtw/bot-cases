@@ -124,22 +124,39 @@ class Social:
         if r.get("cosmetic"):
             self._grant_cosmetic(user_id, r["cosmetic"], reason)
             out["cosmetic"] = r["cosmetic"]
-        if r.get("drop_from") or r.get("level"):
+        if r.get("drop_from") or r.get("case"):
             if rng is None:
                 rng, _ = self._rng(user_id)
-            if r.get("level"):
-                lv = self.catalog.levels[r["level"]]
-                odds, pools = rules.level_odds(r["level"]), lv["pools"]
-            else:
-                base = {t: p for t, p in rules.case_odds().items() if rules.at_least(t, r["drop_from"])}
-                s = sum(base.values())
-                odds = {t: p / s for t, p in base.items()}
-                pools = {t: sorted({i for c in self.catalog.case_list for i in c["pools"][t]}) for t in odds}
-            drop = game.open_pool(rng, pools, self.catalog.items, odds)
+            case = self.catalog.cases.get(r.get("case")) or self._drop_from_case(r["drop_from"])
+            drop = game.open_case(rng, case, self.catalog.items, case["tier_odds"])
             overflow = self._free_slots(user_id) < 1
             item_id = self._insert_item(user_id, drop, reason.split("_")[0], overflow=overflow)
             out["item"] = self.item_view(self._item(item_id))
         return out
+
+    def _drop_from_case(self, floor: str) -> dict:
+        """Кейс-награда «X и выше»: все предметы каталога от ступени floor, шанс обратно пропорционален цене."""
+        items = {i: it for i, it in self.catalog.items.items() if rules.at_least(it["tier"], floor)}
+        alpha = rules.CFG["cases"]["weight_alpha"]
+        raw = {i: rules.item_expected_cents(it) ** -alpha for i, it in items.items()}
+        total = sum(raw.values())
+        weights = {i: w / total for i, w in raw.items()}
+        pools: dict[str, list[str]] = {}
+        for i, it in sorted(items.items()):
+            pools.setdefault(it["tier"], []).append(i)
+        return {"id": f"from_{floor}", "weights": weights, "pools": pools,
+                "tier_odds": {t: sum(weights[i] for i in ids) for t, ids in pools.items()}}
+
+    # --- баннеры ---------------------------------------------------------------------------
+
+    def banner_click(self, user_id: int, banner_id: str) -> dict:
+        """Переход по рекламному баннеру: только счётчик для рекламодателя, наград за переход и подписку нет."""
+        b = next((x for x in rules.CFG["banners"]["list"] if x["id"] == banner_id), None)
+        if not b or not rules.CFG["banners"]["enabled"]:
+            raise GameError("NOT_FOUND", "Баннер не найден.")
+        with self.tx():
+            self.conn.execute("INSERT INTO banner_clicks (banner_id, user_id, ts) VALUES (?,?,?)", (banner_id, user_id, self.clock()))
+        return {"url": b["url"]}
 
     # --- косметика -----------------------------------------------------------------------
 
@@ -213,7 +230,7 @@ class Social:
             out = []
             for uid, prize in zip(winners, prizes):
                 reward = {"cases": prize.get("cases"), "spins": prize.get("n") if prize["kind"] == "spins" else None,
-                          "level": prize.get("level") if prize["kind"] == "level_drop" else None}
+                          "case": prize.get("case") if prize["kind"] == "case_drop" else None}
                 granted = self._grant_reward(uid, {k: v for k, v in reward.items() if v}, "raffle")
                 name = self.conn.execute("SELECT name FROM users WHERE id=?", (uid,)).fetchone()["name"]
                 out.append({"user_id": uid, "name": name or "Игрок", "prize": prize["label"],

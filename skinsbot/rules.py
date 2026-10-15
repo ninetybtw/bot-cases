@@ -17,7 +17,9 @@ CFG: dict = {}
 VERSION = ""
 
 TIER_ORDER = ["common", "uncommon", "rare", "epic", "legendary", "mythic", "secret", "divine", "exclusive"]
-CASE_TIERS = ["rare", "epic", "legendary", "mythic", "secret"]
+# Ступени, которые выпадают из кейсов (от ширпотреба до ножей и перчаток).
+DROP_TIERS = ["common", "uncommon", "rare", "epic", "legendary", "mythic", "secret"]
+CASE_TIERS = DROP_TIERS
 WEAR_NAMES = {
     "FN": "Factory New",
     "MW": "Minimal Wear",
@@ -55,16 +57,6 @@ def at_least(tier: str, floor: str) -> bool:
 
 
 # --- шансы ---------------------------------------------------------------
-
-
-def case_odds() -> dict[str, float]:
-    """Шкала обычного кейса CS2 в долях единицы."""
-    return {t: p / 100 for t, p in CFG["case_odds"].items()}
-
-
-def level_odds(level: str) -> dict[str, float]:
-    odds = CFG["levels"][level]["odds"]
-    return case_odds() if odds is None else {t: p / 100 for t, p in odds.items()}
 
 
 def pity_groups() -> list[tuple[str, tuple[str, ...], int, float, int]]:
@@ -122,13 +114,18 @@ def item_expected_cents(item: dict) -> float:
     return ev
 
 
-def pool_expected_cents(odds: dict[str, float], pools: dict[str, list[str]], items: dict[str, dict]) -> float:
-    ev = 0.0
-    for tier, p in odds.items():
-        pool = pools.get(tier) or []
-        if pool and p:
-            ev += p * sum(item_expected_cents(items[i]) for i in pool) / len(pool)
-    return ev
+def tier_value_cents(case: dict, tier: str, items: dict[str, dict]) -> float:
+    """Средняя цена предмета ступени в кейсе с учётом шансов предметов внутри ступени."""
+    pool = case["pools"].get(tier) or []
+    w = case["weights"]
+    total = sum(w[i] for i in pool)
+    return sum(w[i] * item_expected_cents(items[i]) for i in pool) / total if total else 0.0
+
+
+def case_expected_cents(case: dict, items: dict[str, dict], tier_odds: dict[str, float] | None = None) -> float:
+    """Средний дроп кейса: по шкале кейса или по переданной (например, долгосрочной с гарантиями)."""
+    odds = tier_odds or case["tier_odds"]
+    return sum(p * tier_value_cents(case, t, items) for t, p in odds.items() if p)
 
 
 def quick_sell(price_cents: int) -> int:

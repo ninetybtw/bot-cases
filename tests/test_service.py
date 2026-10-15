@@ -102,7 +102,7 @@ def test_free_spins_and_energy(g):
     assert g.me(1)["energy"]["now"] == 1
 
 
-def test_free_only_on_cheapest_case(g):
+def test_free_only_on_free_case(g):
     other = next(c["id"] for c in g.catalog.case_list if c["id"] != cheap_case(g))
     with pytest.raises(GameError):
         g.spin(1, case_id=other, source="free")
@@ -147,33 +147,35 @@ def test_multi_spin_counts(g):
         g.spin(1, case_id=cheap_case(g), count=2)
 
 
-def test_confirm_required(g):
+def test_confirm_required_without_pause(g):
+    """Подтверждение дорогой покупки осталось, паузы 3 секунды больше нет."""
     rich(g, 1, 400_000)
-    case = g.catalog.case_list[-1]["id"]
+    case = max(g.catalog.case_list, key=lambda c: c["price_cents"] if c["price_cents"] * 10 <= 400_000 else 0)["id"]
     with pytest.raises(GameError) as e:
         g.spin(1, case_id=case, count=10)
-    assert e.value.code == "CONFIRM_REQUIRED" and e.value.extra["pause_s"] == 3
+    assert e.value.code == "CONFIRM_REQUIRED" and "pause_s" not in e.value.extra
     g.spin(1, case_id=case, count=10, confirmed=True)
 
 
-def test_levels_coin_only_no_pity(g):
+def test_pity_per_case(g):
+    """Гарантии у каждого кейса свои: счётчик дешёвого кейса не переносится на дорогой."""
     rich(g, 1)
-    g.conn.execute("UPDATE players SET since_epic=40 WHERE user_id=1")
-    with pytest.raises(GameError):
-        g.spin(1, level="epic", source="free")
-    r = g.spin(1, level="epic", count=5, confirmed=True)
-    assert all(rules.at_least(d["items"][0]["tier"], "epic") for d in r["drops"])
-    assert g.conn.execute("SELECT since_epic FROM players WHERE user_id=1").fetchone()[0] == 40
-    assert r["drops"][0]["items"][0]["one_in"] == round(1 / rules.case_odds()[r["drops"][0]["items"][0]["tier"]])
+    with g.tx():
+        g.conn.execute("INSERT INTO pity_counters (user_id, case_id, since_epic, since_legendary) VALUES (1,'rookie',59,0)")
+    assert g.me(1)["pity"]["rookie"]["epic_chance_pct"] == 100
+    assert g.me(1)["pity"]["knife"]["epic_in"] == 60
+    r = g.spin(1, case_id="knife", count=1, confirmed=True)
+    assert r["pity"]["epic_in"] in (59, 60)
+    assert g.me(1)["pity"]["rookie"]["epic_in"] == 1
+    r = g.spin(1, case_id="rookie", count=1, confirmed=True)
+    assert rules.at_least(r["drops"][0]["items"][0]["tier"], "epic") and r["drops"][0]["pity_applied"] == "epic"
+    assert g.me(1)["pity"]["rookie"]["epic_in"] == 60
 
 
-def test_level_daily_limit(g):
+def test_item_one_in_from_its_case(g):
     rich(g, 1)
-    g.spin(1, level="rare", count=10, confirmed=True)
-    g.spin(1, level="rare", count=10, confirmed=True)
-    with pytest.raises(GameError) as e:
-        g.spin(1, level="rare", count=1, confirmed=True)
-    assert e.value.code == "LEVEL_LIMIT"
+    item = g.spin(1, case_id="rookie", count=1, confirmed=True)["drops"][0]["items"][0]
+    assert item["one_in"] == max(1, round(1 / g.catalog.cases["rookie"]["weights"][item["catalog_id"]]))
 
 
 def test_coin_daily_limit_grows_with_level(g):
@@ -206,13 +208,14 @@ def test_overflow_and_expiry(g):
     assert balance(g, 1) > bal and g.me(1)["slots"]["overflow"] == 0
 
 
-def test_luck_spends_per_spin(g):
+def test_luck_spends_per_spin_and_only_on_cheaper_cases(g):
     rich(g, 1)
-    g.conn.execute("UPDATE players SET luck_mult=2, luck_left=10 WHERE user_id=1")
-    g.spin(1, case_id=cheap_case(g), count=3, confirmed=True)
-    assert g.me(1)["luck"]["spins_left"] == 7
-    g.spin(1, level="rare", count=1, confirmed=True)
-    assert g.me(1)["luck"]["spins_left"] == 7
+    g.conn.execute("UPDATE players SET luck_mult=5, luck_left=10 WHERE user_id=1")
+    r = g.spin(1, case_id="rookie", count=3, confirmed=True)
+    assert g.me(1)["luck"]["spins_left"] == 7 and 1 < r["luck_used"] <= 5
+    dear = next(c["id"] for c in g.catalog.case_list if c["price_cents"] > rules.CFG["luck"]["max_case_cents"])
+    r = g.spin(1, case_id=dear, count=1, confirmed=True)
+    assert g.me(1)["luck"]["spins_left"] == 7 and r["luck_used"] is None
 
 
 # --- коллекция ----------------------------------------------------------------------------------
@@ -271,40 +274,101 @@ def test_showcase_and_duplicates(g):
 # --- контракты и апгрейдер -------------------------------------------------------------------------
 
 
-def five_rare(g, uid):
+def spin_items(g, uid, n=10, case="rookie"):
     rich(g, uid)
-    rare = []
-    while len(rare) < 5:
-        for d in g.spin(uid, case_id=cheap_case(g), count=10, confirmed=True)["drops"]:
-            if d["items"][0]["tier"] == "rare":
-                rare.append(d["items"][0]["id"])
+    out = []
+    while len(out) < n:
+        out += [d["items"][0] for d in g.spin(uid, case_id=case, count=10, confirmed=True)["drops"]]
         g.conn.execute("UPDATE players SET coin_count=0 WHERE user_id=?", (uid,))
-    return rare[:5]
+    return out[:n]
 
 
-def test_contract_rare_to_epic(g):
-    ids = five_rare(g, 1)
-    res = g.contract(1, ids)
-    assert res["success"] and res["item"]["tier"] == "epic"
+def test_contract_any_rarity(g):
+    """Контракт: 3–10 предметов любой редкости, вместо них один предмет, баланс и журнал сходятся."""
+    items = spin_items(g, 1, 12)
+    tiers = {i["tier"] for i in items[:10]}
+    ids = [i["id"] for i in items[:10]]
     with pytest.raises(GameError):
-        g.contract(1, ids)
+        g.contract(1, ids[:2])
+    with pytest.raises(GameError):
+        g.contract(1, [i["id"] for i in items[:11]])
+    q = g.contract_quote(1, ids)
+    assert q["total_cents"] == sum(i["price_cents"] for i in items[:10])
+    assert q["min_cents"] < q["ev_cents"] < q["max_cents"]
+    res = g.contract(1, ids, confirmed=True, idem_key="c1")
+    assert res == g.contract(1, ids, confirmed=True, idem_key="c1")
+    assert res["total_cents"] == q["total_cents"] and res["mult"] in [m for m, _ in rules.CFG["contracts"]["multipliers"]]
+    left = {i["id"] for i in g.inventory(1)["items"]}
+    assert not left & set(ids) and res["item"]["id"] in left
+    assert len(tiers) >= 1
+    with pytest.raises(GameError):
+        g.contract(1, ids, confirmed=True)
+    assert ledger_sum(g, 1) == balance(g, 1)
 
 
 def test_upgrade_flow_and_config_changed(g):
-    rich(g, 1)
-    ids = [d["items"][0] for d in g.spin(1, case_id=cheap_case(g), count=10, confirmed=True)["drops"]]
-    stake = next(i for i in ids if i["tier"] == "rare")
+    stake = spin_items(g, 1, 1)[0]
     target = g.upgrade_targets(stake["price_cents"], 2)[0]
     t = {"catalog_item_id": target["catalog_item_id"], "wear": target["wear"], "stattrak": target["stattrak"]}
     q = g.upgrade_quote(1, [stake["id"]], 0, t)
     with pytest.raises(GameError) as e:
         g.upgrade(1, [stake["id"]], 0, t, quote_chance_pct=q["chance_pct"] + 5)
     assert e.value.code == "CONFIG_CHANGED"
-    res = g.upgrade(1, [stake["id"]], 0, t, quote_chance_pct=q["chance_pct"])
+    res = g.upgrade(1, [stake["id"]], 0, t, quote_chance_pct=q["chance_pct"], confirmed=True)
     assert res["chance_pct"] <= 80
     assert res["success"] == ("item" in res)
     if not res["success"]:
         assert res["parts_cents"] == stake["price_cents"] * 10 // 100 and res["next_bonus_pct"] == 3
+
+
+def test_upgrade_stake_has_no_collection_share_limit(g):
+    """Ставить можно сколько угодно от коллекции и баланса: лимита «трети/половины» больше нет."""
+    rich(g, 1, 1_000_000)
+    target = g.upgrade_targets(1_500_000, 2)[0]
+    t = {"catalog_item_id": target["catalog_item_id"], "wear": target["wear"], "stattrak": target["stattrak"]}
+    res = g.upgrade(1, [], 1_000_000, t, confirmed=True)
+    assert "success" in res and ledger_sum(g, 1) == balance(g, 1)
+
+
+def test_quick_sell_by_rarity(g):
+    items = spin_items(g, 1, 20)
+    g.lock(1, items[0]["id"], True)
+    groups = {x["id"]: x for x in g.sell_groups(1)}
+    assert groups["all"]["count"] == 19
+    tier = items[1]["tier"]
+    q = g.sell_group_quote(1, tier)
+    assert set(q["item_ids"]) == {i["id"] for i in items[1:] if i["tier"] == tier}
+    assert q["total_cents"] == groups[tier]["total_cents"]
+    res = g.sell(1, q["item_ids"], confirmed=True, idem_key="s1")
+    assert res["total_cents"] == q["total_cents"]
+    rest = g.sell_group_quote(1, "all")
+    g.sell(1, rest["item_ids"], confirmed=True, idem_key="s2")
+    assert [i["id"] for i in g.inventory(1)["items"]] == [items[0]["id"]]  # под замком остался
+    assert ledger_sum(g, 1) == balance(g, 1)
+    with pytest.raises(GameError):
+        g.sell_group_quote(1, "standoff")
+
+
+def test_bulk_sell_of_rare_needs_confirm(g):
+    rich(g, 1)
+    leg = next(i for i in sorted(g.catalog.items) if g.catalog.items[i]["tier"] == "legendary")
+    from skinsbot import game as gm
+    with g.tx():
+        ids = [g._insert_item(1, gm.make_drop(gm.FairRng("ab" * 32, "x", n), g.catalog.items[leg]), "test") for n in range(2)]
+    with pytest.raises(GameError) as e:
+        g.sell(1, ids)
+    assert e.value.code == "CONFIRM_REQUIRED"
+    assert g.sell(1, ids, confirmed=True)["total_cents"] > 0
+
+
+def test_banner_click_logged_without_reward(g):
+    bal = balance(g, 1)
+    r = g.banner_click(1, rules.CFG["banners"]["list"][0]["id"])
+    assert r["url"].startswith("https://t.me/")
+    assert balance(g, 1) == bal
+    assert g.economy()["banner_clicks"] == {rules.CFG["banners"]["list"][0]["id"]: 1}
+    with pytest.raises(GameError):
+        g.banner_click(1, "nope")
 
 
 # --- рынок и обмены ------------------------------------------------------------------------------------
@@ -475,7 +539,7 @@ def test_payments_idempotent_and_month_cap(g):
             p = g.create_invoice(1, code)
             assert g.grant_payment(p["payload"], f"c{n}", p["stars"])["granted"]
         assert g.shop(1)["month_spent"] == 89 + 249 + 49 + 99
-        assert g.me(1)["luck"] == {"mult": 2.0, "spins_left": 10}
+        assert g.me(1)["luck"]["mult"] == 2.0 and g.me(1)["luck"]["spins_left"] == 10
         with pytest.raises(GameError) as e:
             g.create_invoice(1, "slots_100")  # 486 + 99 > 500
         assert e.value.code == "STARS_MONTH_CAP"
@@ -516,7 +580,7 @@ def test_admin_config_validation(g):
     import copy
 
     bad = copy.deepcopy(rules.CFG)
-    bad["case_odds"]["rare"] = 70
+    bad["contracts"]["multipliers"] = [[2.0, 1]]
     with pytest.raises(GameError):
         g.save_config(1, bad)
     ok = copy.deepcopy(rules.CFG)

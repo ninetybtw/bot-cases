@@ -5,9 +5,9 @@
   "use strict";
   const CAT = window.DEMO_CATALOG;
   const CFG = window.DEMO_CONFIG;
-  const KEY = "skins-demo-v14";
+  const KEY = "skins-demo-v15";
   const ORDER = ["common", "uncommon", "rare", "epic", "legendary", "mythic", "secret", "divine", "exclusive"];
-  const CASE_TIERS = ["rare", "epic", "legendary", "mythic", "secret"];
+  const DROP_TIERS = ["common", "uncommon", "rare", "epic", "legendary", "mythic", "secret"];
   const rank = (t) => ORDER.indexOf(t);
   const atLeast = (t, f) => rank(t) >= rank(f);
   const ME = 1;
@@ -71,17 +71,18 @@
   const cos = (a) => a[Math.floor(Math.random() * a.length)];
 
   // ---------- правила (как skinsbot/rules.py и game.py) ----------
-  const caseOdds = () => Object.fromEntries(Object.entries(CFG.case_odds).map(([t, p]) => [t, p / 100]));
-  const levelOdds = (l) => (CFG.levels[l].odds ? Object.fromEntries(Object.entries(CFG.levels[l].odds).map(([t, p]) => [t, p / 100])) : caseOdds());
   const WEAR = Object.fromEntries(CFG.wear.map(([w, lo, hi, p, m]) => [w, { lo, hi, p: p / 100, m }]));
   const priceKey = (wear, st) => (st ? "ST_" : "") + (wear || "-");
   const splitKey = (k) => { const st = k.startsWith("ST_"); const w = k.replace("ST_", ""); return [w === "-" ? null : w, st]; };
   const price = (id, wear, st) => CAT.items[id].prices[priceKey(wear, st)];
   const quickSell = (c) => Math.floor((c * CFG.sell_system_pct) / 100);
   const cases = Object.fromEntries(CAT.cases.map((c) => [c.id, c]));
-  const levels = Object.fromEntries((CAT.levels || []).map((l) => [l.id, l]));
-  const cheapest = CAT.cases.reduce((a, b) => (b.price_cents < a.price_cents ? b : a));
-  const UNIT = cheapest.price_cents;
+  const freeCase = CAT.cases.find((c) => c.free) || CAT.cases.reduce((a, b) => (b.price_cents < a.price_cents ? b : a));
+  const UNIT = (cases[CFG.cases.unit_case] || freeCase).price_cents;
+  const MAX_PRICE = Math.max(...Object.values(CAT.items).flatMap((it) => Object.values(it.prices)));
+  const CT_MAX_TOTAL = Math.floor(MAX_PRICE / Math.max(...CFG.contracts.multipliers.map((m) => m[0])));
+  const itemChance = (id, caseId) => { const c = cases[caseId] || cases[(CAT.items[id].cases || [])[0]]; return c ? c.weights[id] || 0 : 0; };
+  const groupChance = (o, floor) => Object.entries(o).filter(([t]) => atLeast(t, floor)).reduce((s, [, p]) => s + p, 0);
   const TARGETS = [];
   Object.values(CAT.items).forEach((it) => Object.entries(it.prices).forEach(([k, p]) => TARGETS.push([p, it.id, k])));
   TARGETS.sort((a, b) => a[0] - b[0]);
@@ -91,27 +92,19 @@
     if (n >= soft) return Math.min(1, base + (n - soft + 1) * step);
     return base;
   }
-  function applyLuck(o, m) {
-    if (!m || m === 1) return { ...o };
-    const donors = Object.keys(o).sort((a, b) => o[b] - o[a]).slice(0, 2);
-    const out = {};
-    let used = 0;
-    for (const t in o) if (!donors.includes(t)) { out[t] = o[t] * m; used += out[t]; }
-    const dt = donors.reduce((s, t) => s + o[t], 0);
-    donors.forEach((t) => (out[t] = (o[t] / dt) * (1 - used)));
-    return out;
-  }
-  function spinOdds(se, sl, luck) {
-    const o = applyLuck(caseOdds(), luck);
+  function spinOdds(tierOdds, se, sl) {
+    const o = { ...tierOdds };
     const P = CFG.pity;
-    const B = CASE_TIERS.filter((t) => atLeast(t, P.legend_plus.from)), A = CASE_TIERS.filter((t) => atLeast(t, P.epic_plus.from));
+    const tiers = Object.keys(o);
+    const B = tiers.filter((t) => atLeast(t, P.legend_plus.from)), A = tiers.filter((t) => atLeast(t, P.epic_plus.from));
     const baseB = B.reduce((s, t) => s + o[t], 0), baseA = A.reduce((s, t) => s + o[t], 0);
+    if (baseB <= 0 || baseA <= 0) return [o, null];
     const qb = groupProb(baseB, sl + 1, P.legend_plus.soft, P.legend_plus.step_pct / 100, P.legend_plus.hard);
     const qa = Math.max(groupProb(baseA, se + 1, P.epic_plus.soft, P.epic_plus.step_pct / 100, P.epic_plus.hard), qb);
     if (qb <= baseB + 1e-12 && qa <= baseA + 1e-12) return [o, null];
     const out = {};
     const part = (ts, total) => { const s = ts.reduce((x, t) => x + o[t], 0); ts.forEach((t) => (out[t] = s ? (o[t] / s) * total : 0)); };
-    part(B, qb); part(A.filter((t) => !B.includes(t)), qa - qb); part(Object.keys(o).filter((t) => !A.includes(t)), 1 - qa);
+    part(B, qb); part(A.filter((t) => !B.includes(t)), qa - qb); part(tiers.filter((t) => !A.includes(t)), 1 - qa);
     return [out, qb > baseB + 1e-12 ? "legend" : "epic"];
   }
   function wearDist(it) {
@@ -119,6 +112,41 @@
     const tot = it.wears.reduce((s, w) => s + WEAR[w].p, 0);
     return Object.fromEntries(it.wears.map((w) => [w, WEAR[w].p / tot]));
   }
+  function itemEV(it) {
+    const st = it.stattrak ? CFG.stattrak.pct / 100 : 0;
+    const wd = wearDist(it) || { "-": 1 };
+    return Object.entries(wd).reduce((s, [w, p]) => {
+      const wear = w === "-" ? null : w;
+      return s + p * (1 - st) * it.prices[priceKey(wear, false)] + (st ? p * st * it.prices[priceKey(wear, true)] : 0);
+    }, 0);
+  }
+  function luckCap(m) {
+    const keys = Object.keys(CFG.luck.max_return).map(Number).filter((k) => k <= m);
+    return keys.length ? CFG.luck.max_return[String(Math.max(...keys))] : 1;
+  }
+  function luckyWeights(c, m) {
+    const w = c.weights;
+    if (!m || m <= 1) return [w, 1];
+    const val = Object.fromEntries(Object.keys(w).map((i) => [i, itemEV(CAT.items[i])]));
+    const boosted = Object.keys(w).filter((i) => val[i] > c.price_cents);
+    const rest = 1 - boosted.reduce((s, i) => s + w[i], 0);
+    if (!boosted.length || rest <= 0) return [w, 1];
+    const apply = (k) => {
+      const b = {};
+      boosted.forEach((i) => (b[i] = w[i] * k));
+      let tot = Object.values(b).reduce((s, x) => s + x, 0);
+      if (tot > CFG.luck.max_boosted_share) { for (const i in b) b[i] = (b[i] / tot) * CFG.luck.max_boosted_share; tot = CFG.luck.max_boosted_share; }
+      return Object.fromEntries(Object.keys(w).map((i) => [i, i in b ? b[i] : (w[i] / rest) * (1 - tot)]));
+    };
+    const ret = (o) => Object.keys(o).reduce((s, i) => s + o[i] * val[i], 0) / c.price_cents;
+    const cap = luckCap(m);
+    if (ret(apply(m)) <= cap) return [apply(m), m];
+    if (ret(w) >= cap) return [w, 1];
+    let lo = 1, hi = m;
+    for (let n = 0; n < 60; n++) { const mid = (lo + hi) / 2; if (ret(apply(mid)) <= cap) lo = mid; else hi = mid; }
+    return [apply(lo), lo];
+  }
+  const tierOddsOf = (c, w) => Object.fromEntries(Object.entries(c.pools).map(([t, ids]) => [t, ids.reduce((s, i) => s + w[i], 0)]));
   function makeDrop(rng, it, st, fv, wear) {
     if (wear && it.wears && it.wears.length) {
       const lo = Math.max(WEAR[wear].lo, it.min_float), hi = Math.min(WEAR[wear].hi, it.max_float);
@@ -133,9 +161,49 @@
     if (st == null) st = !!it.stattrak && rng.random() < CFG.stattrak.pct / 100;
     return { catalog_id: it.id, tier: it.tier, wear: wear || null, float_value: fv == null ? null : fv, pattern: Math.floor(rng.random() * 1000), stattrak: !!st, price: price(it.id, wear, st) };
   }
-  function openPool(rng, pools, odds) {
-    const tier = rng.weighted(Object.fromEntries(Object.entries(odds).filter(([t]) => pools[t] && pools[t].length)));
-    return makeDrop(rng, CAT.items[rng.choice(pools[tier])]);
+  function openCase(rng, c, odds, weights) {
+    const w = weights || c.weights;
+    const tier = rng.weighted(Object.fromEntries(Object.entries(odds || c.tier_odds).filter(([t]) => c.pools[t] && c.pools[t].length)));
+    const id = rng.weighted(Object.fromEntries(c.pools[tier].map((i) => [i, w[i]])));
+    return makeDrop(rng, CAT.items[id]);
+  }
+  function dropFromCase(floor) {
+    const ids = Object.keys(CAT.items).filter((i) => atLeast(CAT.items[i].tier, floor)).sort();
+    const raw = Object.fromEntries(ids.map((i) => [i, itemEV(CAT.items[i]) ** -CFG.cases.weight_alpha]));
+    const tot = Object.values(raw).reduce((a, b) => a + b, 0);
+    const weights = Object.fromEntries(ids.map((i) => [i, raw[i] / tot]));
+    const pools = {};
+    ids.forEach((i) => (pools[CAT.items[i].tier] = pools[CAT.items[i].tier] || []).push(i));
+    return { weights, pools, tier_odds: Object.fromEntries(Object.entries(pools).map(([t, l]) => [t, l.reduce((s, i) => s + weights[i], 0)])) };
+  }
+  function contract(rng, inputs) {
+    const total = inputs.reduce((s, i) => s + i.price, 0);
+    const mult = +rng.weighted(Object.fromEntries(CFG.contracts.multipliers.map(([m, w]) => [String(m), w])));
+    const target = Math.max(1, total * mult);
+    const floats = inputs.filter((i) => i.float_value != null).map((i) => i.float_value);
+    const avg = floats.length ? floats.reduce((a, b) => a + b, 0) / floats.length : rng.random();
+    const wantSt = inputs.every((i) => i.stattrak);
+    const cands = [];
+    for (const id of Object.keys(CAT.items).sort()) {
+      const it = CAT.items[id];
+      let fv = null, wear = null;
+      if (it.wears && it.wears.length) {
+        fv = +(it.min_float + avg * (it.max_float - it.min_float)).toFixed(6);
+        wear = Object.keys(WEAR).find((w) => fv >= WEAR[w].lo && fv < WEAR[w].hi && it.wears.includes(w)) || it.wears[it.wears.length - 1];
+      }
+      const st = wantSt && !!it.stattrak;
+      const k = priceKey(wear, st);
+      if (k in it.prices) cands.push([it.prices[k], id, fv, st]);
+    }
+    cands.sort((a, b) => a[0] - b[0] || (a[1] < b[1] ? -1 : 1));
+    let k = cands.findIndex((c) => c[0] >= target);
+    if (k < 0) k = cands.length;
+    const lo = cands[Math.max(0, k - 1)], hi = cands[Math.min(k, cands.length - 1)];
+    const u = rng.random();
+    let pick;
+    if (hi[0] > lo[0] && lo[0] <= target && target <= hi[0]) pick = u < (target - lo[0]) / (hi[0] - lo[0]) ? hi : lo;
+    else pick = k < cands.length && cands[k][0] === target ? hi : k ? lo : hi;
+    return [makeDrop(rng, CAT.items[pick[1]], pick[3], pick[2]), mult, total];
   }
 
   // ---------- состояние ----------
@@ -191,7 +259,7 @@
     const p = price(r.catalog_id, r.wear, r.stattrak);
     return { id: r.id, catalog_id: r.catalog_id, name: c.name, weapon: c.weapon, finish: c.finish, tier: r.tier, game_rarity: c.game_rarity,
       image_url: c.image, wear: r.wear, float: r.float_value, pattern: r.pattern, stattrak: !!r.stattrak, price_cents: p, sell_cents: quickSell(p),
-      drop_price_cents: r.drop_price, one_in: Math.max(1, Math.round(1 / (caseOdds()[r.tier] || 1))), origin: r.origin, created_at: r.created_at,
+      drop_price_cents: r.drop_price, one_in: Math.max(1, Math.round(1 / (itemChance(r.catalog_id, (r.origin || "").startsWith("case:") ? r.origin.slice(5) : null) || 1))), origin: r.origin, created_at: r.created_at,
       state: r.state, locked: !!r.locked, frozen: false, hold_until: r.hold_until && r.hold_until > now() ? r.hold_until : null, overflow_until: r.overflow_until };
   }
   const itemsOf = (uid) => Object.values(db.items).filter((i) => i.owner === uid && i.state !== "gone");
@@ -238,7 +306,7 @@
   function newPlayer(uid, name, opts = {}) {
     db.users[uid] = { id: uid, name, country: opts.country || "RU", country_confirmed: !!opts.confirmed, country_set_at: null, created_at: opts.created || now() };
     db.players[uid] = { balance: 0, xp: 0, level: 1, energy: CFG.energy.start, energy_ts: now(), bonus_spins: 0, paid_attempts: 0, counters: {},
-      since_epic: 0, since_legendary: 0, luck_mult: null, luck_left: 0, upgrade_bonus: 0, slots: CFG.inventory.slots, vip_until: null,
+      pity: {}, luck_mult: null, luck_left: 0, upgrade_bonus: 0, slots: CFG.inventory.slots, vip_until: null,
       total_spins: 0, showcase: [], frame: null, seed: null, last_drop: null };
     ledger(uid, UNIT * CFG.start_balance_cases, "start");
   }
@@ -252,8 +320,10 @@
     P(ME).energy = 2;
     P(ME).energy_ts = now() - 3600 * 1.6;
     const r0 = new Rng({ id: 0, server_seed: randHex(32), client_seed: "demo", nonce: 0 }, 0);
-    for (let k = 0; k < 9; k++) addItem(ME, openPool(r0, cheapest.pools, caseOdds()), "case:" + cheapest.id, { ts: now() - (12 - k) * 1800 });
-    addItem(ME, makeDrop(r0, CAT.items[cos(cheapest.pools.epic)]), "case:" + cheapest.id, { ts: now() - 600 });
+    const starter = cases.rookie || CAT.cases[1];
+    for (let k = 0; k < 9; k++) addItem(ME, openCase(r0, starter), "case:" + starter.id, { ts: now() - (12 - k) * 1800 });
+    const epicPool = starter.pools.epic || starter.pools.rare;
+    addItem(ME, makeDrop(r0, CAT.items[cos(epicPool)]), "case:" + starter.id, { ts: now() - 600 });
     P(ME).total_spins = 10;
     P(ME).xp = 100; P(ME).level = 2;
     // Вымышленные игроки демо: лоты на рынке, лента дропов, рейтинг, обмен и дуэль.
@@ -261,10 +331,11 @@
       newPlayer(uid, name, { confirmed: true, created: now() - 30 * 86400 });
       P(uid).level = 3 + n * 2;
       P(uid).xp = 100 * P(uid).level * (P(uid).level - 1) / 2 + 20;
-      const c = CAT.cases[n % CAT.cases.length];
-      for (let k = 0; k < 6; k++) addItem(uid, openPool(r0, c.pools, caseOdds()), "case:" + c.id, { ts: now() - k * 3000 });
-      const rare = ["legendary", "epic", "mythic", "epic", "secret"][n];
-      const it = addItem(uid, makeDrop(r0, CAT.items[cos(c.pools[rare])]), "case:" + c.id, { ts: now() - n * 900 });
+      const c = CAT.cases[(n * 3 + 1) % CAT.cases.length];
+      for (let k = 0; k < 6; k++) addItem(uid, openCase(r0, c), "case:" + c.id, { ts: now() - k * 3000 });
+      const want = ["legendary", "epic", "mythic", "epic", "secret"][n];
+      const pool = c.pools[want] || c.pools[Object.keys(c.pools).sort((a, b) => rank(b) - rank(a))[0]];
+      const it = addItem(uid, makeDrop(r0, CAT.items[cos(pool)]), "case:" + c.id, { ts: now() - n * 900 });
       db.feed.push(it.id);
     });
     db.refs.push([ME, 1002, now() - 86400, now() - 80000], [ME, 1004, now() - 50000, null]);
@@ -275,8 +346,8 @@
       db.lots.push({ id: ++db.seq, item_id: it.id, seller: it.owner, price: Math.max(1, Math.round(p * (0.85 + (k % 5) * 0.08))), fee_pct: 10,
         status: "active", buyer: null, sold_at: null, created_at: now() - k * 3600, expires_at: now() + 2 * 86400 });
     });
-    const gift = itemsOf(1002).find((i) => i.state === "free" && i.tier === "rare");
-    const mine = itemsOf(ME).find((i) => i.tier === "rare");
+    const gift = itemsOf(1002).find((i) => i.state === "free");
+    const mine = itemsOf(ME).find((i) => i.tier === "rare") || itemsOf(ME)[0];
     if (gift && mine) {
       gift.state = "trade";
       db.trades.push({ id: ++db.seq, from_user: 1002, to_user: ME, status: "pending", give: [gift.id], take: [mine.id],
@@ -308,16 +379,9 @@
     if (r.cases) { out.coins_cents = Math.round(UNIT * r.cases); ledger(uid, out.coins_cents, reason); }
     if (r.spins) { P(uid).bonus_spins += r.spins; out.spins = r.spins; }
     if (r.cosmetic) { db.cosmetics[`${uid}|${r.cosmetic}`] = true; out.cosmetic = r.cosmetic; }
-    if (r.drop_from || r.level) {
-      let odds, pools;
-      if (r.level) { odds = levelOdds(r.level); pools = levels[r.level].pools; }
-      else {
-        const base = Object.fromEntries(Object.entries(caseOdds()).filter(([t]) => atLeast(t, r.drop_from)));
-        const s = Object.values(base).reduce((a, b) => a + b, 0);
-        odds = Object.fromEntries(Object.entries(base).map(([t, p]) => [t, p / s]));
-        pools = Object.fromEntries(Object.keys(odds).map((t) => [t, [...new Set(CAT.cases.flatMap((c) => c.pools[t]))]]));
-      }
-      const it = addItem(uid, openPool(rg || rng(uid), pools, odds), reason.split("_")[0], { overflow: slots(uid) - used(uid)[0] < 1 });
+    if (r.drop_from || r.case) {
+      const c = cases[r.case] || dropFromCase(r.drop_from);
+      const it = addItem(uid, openCase(rg || rng(uid), c), reason.split("_")[0], { overflow: slots(uid) - used(uid)[0] < 1 });
       out.item = view(it);
     }
     return out;
@@ -358,26 +422,37 @@
 
   route("GET", "/config", () => ({
     version: CFG.version, generated_at: CAT.generated_at, usd_rub: CAT.usd_rub, tiers: CFG.tiers, currency: CFG.currency,
-    case_odds: Object.entries(caseOdds()).map(([tier, p]) => ({ tier, p, one_in: Math.max(1, Math.round(1 / p)) })),
-    cases: CAT.cases.map((c) => ({ id: c.id, name: c.name, image_url: c.image, price_cents: c.price_cents, ev_cents: c.ev_cents, free: c.id === cheapest.id,
-      pools: Object.fromEntries(Object.entries(c.pools).map(([t, ids]) => [t, ids.map((id) => { const it = CAT.items[id]; const ps = Object.values(it.prices); return { id, name: it.name, image_url: it.image, tier: it.tier, min_cents: Math.min(...ps), max_cents: Math.max(...ps) }; })])) })),
-    levels: Object.entries(CFG.levels).map(([id, l]) => {
-      if (!l.odds) return { id, name: l.name, what: l.what, from: l.from, odds: null };
-      const o = levelOdds(id);
-      return { id, name: l.name, what: l.what, from: l.from, price_cents: levels[id].price_cents, ev_cents: levels[id].ev_cents,
-        odds: Object.entries(o).map(([tier, p]) => ({ tier, p })), goal: { label: l.goal.label, p: Object.entries(o).filter(([t]) => atLeast(t, l.goal.from)).reduce((s, [, p]) => s + p, 0) } };
-    }),
-    wear: CFG.wear, stattrak: CFG.stattrak, pity: CFG.pity, spin: CFG.spin, energy: CFG.energy, upgrader: CFG.upgrader, contracts: CFG.contracts,
+    categories: CFG.cases.categories,
+    cases: CAT.cases.map((c) => ({ id: c.id, name: c.name, category: c.category, image_url: c.image, top_tier: c.top_tier, price_cents: c.price_cents,
+      ev_cents: c.ev_cents, free: c.id === freeCase.id, luck: c.price_cents <= CFG.luck.max_case_cents, tier_odds: c.tier_odds,
+      items: Object.values(c.pools).flat().sort((a, b) => rank(CAT.items[b].tier) - rank(CAT.items[a].tier) || c.weights[a] - c.weights[b]).map((id) => {
+        const it = CAT.items[id]; const ps = Object.values(it.prices);
+        return { id, name: it.name, image_url: it.image, tier: it.tier, min_cents: Math.min(...ps), max_cents: Math.max(...ps), p: c.weights[id], one_in: Math.max(1, Math.round(1 / c.weights[id])) };
+      }) })),
+    banners: CFG.banners.enabled ? { label: CFG.banners.label, list: CFG.banners.list } : null,
+    sell_quick: CFG.sell_quick.groups,
+    luck: { stack: CFG.luck.stack, max_boosted_share: CFG.luck.max_boosted_share, max_case_cents: CFG.luck.max_case_cents, max_return: CFG.luck.max_return },
+    wear: CFG.wear, stattrak: CFG.stattrak, pity: CFG.pity, spin: CFG.spin, energy: CFG.energy, upgrader: CFG.upgrader,
+    contracts: { min_items: CFG.contracts.min_items, max_items: CFG.contracts.max_items, max_total_cents: CT_MAX_TOTAL,
+      table: (() => { const w = CFG.contracts.multipliers.reduce((s, m) => s + m[1], 0); return CFG.contracts.multipliers.map(([m, x]) => ({ mult: m, p: x / w })); })() },
     market: CFG.market, trades: CFG.trades, wheel: { daily: CFG.wheel.daily, weekly: CFG.wheel.weekly, weekly_unlock_days: CFG.wheel.weekly_unlock_days },
     duels: CFG.duels, referral: CFG.referral, cosmetics: CFG.cosmetics, sell_system_pct: CFG.sell_system_pct, undo_sell: CFG.undo_sell,
-    inventory: CFG.inventory, notifications: CFG.notifications, unit_cents: UNIT, free_case_id: cheapest.id, shop_enabled: true,
+    inventory: CFG.inventory, notifications: CFG.notifications, unit_cents: UNIT, free_case_id: freeCase.id, shop_enabled: true,
   }));
+
+  function casePity(caseId) {
+    const c = cases[caseId];
+    if (groupChance(c.tier_odds, "epic") <= 0 || groupChance(c.tier_odds, "legendary") <= 0) return null;
+    const [se, sl] = P(ME).pity[caseId] || [0, 0];
+    const [o] = spinOdds(c.tier_odds, se, sl);
+    return { epic_in: CFG.pity.epic_plus.hard - se, legend_in: CFG.pity.legend_plus.hard - sl,
+      epic_chance_pct: Math.round(groupChance(o, "epic") * 10000) / 100, legend_chance_pct: Math.round(groupChance(o, "legendary") * 10000) / 100 };
+  }
 
   route("GET", "/me", () => {
     sync(ME);
     const u = U(ME), p = P(ME), s = seed(ME);
     const [e, ts] = energy(ME);
-    const [odds] = spinOdds(p.since_epic, p.since_legendary, 1);
     const [main, over] = used(ME);
     const per = CFG.xp ? CFG.xp.per_level : 100;
     return {
@@ -387,9 +462,9 @@
       currency: { country: u.country, ...CFG.currency.countries[u.country], game_label: CFG.currency.game_label },
       balance_cents: p.balance, star_credit: 0, energy: { now: e, max: CFG.energy.max, next_at: e >= CFG.energy.max ? null : ts + CFG.energy.regen_minutes * 60 },
       attempts: p.paid_attempts, bonus_spins: p.bonus_spins, coin_spins_left: Math.max(0, coinLimit(p.level) - counter(ME, "coin")),
-      level_spins_left: Math.max(0, CFG.spin.levels_per_day - counter(ME, "lvl")), luck: p.luck_left ? { mult: p.luck_mult, spins_left: p.luck_left } : null,
-      pity: { epic_in: CFG.pity.epic_plus.hard - p.since_epic, legend_in: CFG.pity.legend_plus.hard - p.since_legendary,
-        epic_chance_pct: Math.round(Object.entries(odds).filter(([t]) => atLeast(t, "epic")).reduce((x, [, v]) => x + v, 0) * 10000) / 100 },
+      luck: p.luck_left ? { mult: p.luck_mult, spins_left: p.luck_left, max_case_cents: CFG.luck.max_case_cents, max_return: luckCap(p.luck_mult),
+        cases: Object.fromEntries(CAT.cases.filter((c) => c.price_cents <= CFG.luck.max_case_cents).map((c) => [c.id, Math.round(luckyWeights(c, p.luck_mult)[1] * 10) / 10])) } : null,
+      pity: Object.fromEntries(CAT.cases.map((c) => [c.id, casePity(c.id)]).filter(([, v]) => v)),
       slots: { used: main, total: slots(ME), overflow: over, overflow_max: CFG.inventory.overflow_slots },
       upgrades_left: CFG.upgrader.per_day - counter(ME, "upg"), upgrade_bonus_pct: p.upgrade_bonus, duels_left: CFG.duels.casual.per_day - counter(ME, "duel"),
       total_spins: p.total_spins, break_reminder: counter(ME, "spins") >= CFG.spin.break_reminder_spins,
@@ -411,21 +486,14 @@
   route("POST", "/me/last-drop/ack", () => ({ ok: true }));
 
   route("POST", "/spin", (b) => {
-    const count = +b.count || 1, level = b.level || "common", isLevel = level !== "common", source = b.source || "coin";
-    if (!CFG.spin.counts.includes(count)) fail("BAD_REQUEST", "Можно крутить ×1, ×3, ×5 или ×10.");
+    const count = +b.count || 1, source = b.source || "coin";
+    if (!CFG.spin.counts.includes(count)) fail("BAD_REQUEST", "Можно открыть ×1, ×3, ×5 или ×10.");
     sync(ME);
     const p = P(ME);
-    let pools, cost = 0, unit;
-    if (isLevel) {
-      if (source !== "coin") fail("BAD_REQUEST", "Уровни выше Обычной крутятся только за монеты.");
-      pools = levels[level].pools; unit = levels[level].price_cents;
-      if (counter(ME, "lvl") + count > CFG.spin.levels_per_day) fail("LEVEL_LIMIT", `Уровни выше Обычной: не больше ${CFG.spin.levels_per_day} круток в сутки.`);
-    } else {
-      const c = cases[b.case_id];
-      if (!c) fail("BAD_REQUEST", "Такого кейса нет.");
-      pools = c.pools; unit = c.price_cents;
-      if (source !== "coin" && c.id !== cheapest.id) fail("BAD_REQUEST", "Бесплатные спины и попытки открывают самый дешёвый кейс.");
-    }
+    const c = cases[b.case_id || (source !== "coin" ? freeCase.id : "")];
+    if (!c) fail("BAD_REQUEST", "Такого кейса нет.");
+    if (source !== "coin" && c.id !== freeCase.id) fail("BAD_REQUEST", `Бесплатные спины и попытки открывают кейс «${freeCase.name}».`);
+    let cost = 0;
     let [e, ts] = energy(ME);
     if (source === "free") {
       if (e + p.bonus_spins < count) fail("NO_ENERGY", "Бесплатные спины закончились. Новый будет через 3 часа.");
@@ -436,43 +504,46 @@
       if (p.paid_attempts < count) fail("NO_ENERGY", "Попыток не хватает.");
       p.paid_attempts -= count;
     } else {
-      if (!isLevel && count > coinLimit(p.level) - counter(ME, "coin")) fail("DAILY_LIMIT", `За монеты сегодня можно открыть ещё ${Math.max(0, coinLimit(p.level) - counter(ME, "coin"))}.`);
-      cost = unit * count;
+      if (count > coinLimit(p.level) - counter(ME, "coin")) fail("DAILY_LIMIT", `За монеты сегодня можно открыть ещё ${Math.max(0, coinLimit(p.level) - counter(ME, "coin"))}.`);
+      cost = c.price_cents * count;
       if (!b.confirmed && p.balance >= cost && (cost >= CFG.spin.confirm_from_cents || cost > p.balance * CFG.spin.confirm_balance_share))
-        fail("CONFIRM_REQUIRED", `Подтверди покупку на ${money(cost)}.`, { cost_cents: cost, pause_s: CFG.spin.confirm_pause_s });
+        fail("CONFIRM_REQUIRED", `Открыть за ${money(cost)}?`, { cost_cents: cost });
       charge(ME, cost, "spin");
-      bump(ME, isLevel ? "lvl" : "coin", count);
+      bump(ME, "coin", count);
     }
     const free = slots(ME) - used(ME)[0];
     const toOver = Math.max(0, count - Math.max(0, free));
-    if (used(ME)[1] + toOver > CFG.inventory.overflow_slots) fail("INVENTORY_FULL", "Освободи место: коллекция и переполнение заполнены.");
+    if (used(ME)[1] + toOver > CFG.inventory.overflow_slots) fail("INVENTORY_FULL", "Освободи место: коллекция и переполнение заполнены. Продай лишнее в Инвентаре.");
     const r = rng(ME);
+    const lucky = c.price_cents <= CFG.luck.max_case_cents;
+    let [se, sl] = p.pity[c.id] || [0, 0];
+    let luckUsed = null;
+    const ids = Object.keys(c.weights), ws = ids.map((i) => c.weights[i]), wsum = ws.reduce((a, x) => a + x, 0);
+    const pickCos = () => { let x = Math.random() * wsum; for (let i = 0; i < ids.length; i++) { x -= ws[i]; if (x < 0) return ids[i]; } return ids[0]; };
     const drops = [];
     for (let k = 0; k < count; k++) {
-      let odds, applied = null;
-      if (isLevel) odds = levelOdds(level);
-      else { [odds, applied] = spinOdds(p.since_epic, p.since_legendary, p.luck_left > 0 ? p.luck_mult : 1); if (p.luck_left > 0) p.luck_left--; }
-      const d = openPool(r, pools, odds);
-      if (!isLevel) { p.since_epic = atLeast(d.tier, "epic") ? 0 : p.since_epic + 1; p.since_legendary = atLeast(d.tier, "legendary") ? 0 : p.since_legendary + 1; }
-      const it = addItem(ME, d, isLevel ? "level:" + level : "case:" + b.case_id, { overflow: k >= count - toOver });
+      let w = c.weights, to = c.tier_odds;
+      if (lucky && p.luck_left > 0) { p.luck_left--; [w, luckUsed] = luckyWeights(c, p.luck_mult); to = tierOddsOf(c, w); }
+      const [odds, applied] = spinOdds(to, se, sl);
+      const d = openCase(r, c, odds, w);
+      se = atLeast(d.tier, "epic") ? 0 : se + 1;
+      sl = atLeast(d.tier, "legendary") ? 0 : sl + 1;
+      const it = addItem(ME, d, "case:" + c.id, { overflow: k >= count - toOver });
       if (atLeast(d.tier, "epic")) db.feed.push(it.id);
-      const avail = Object.entries(odds).filter(([t]) => pools[t] && pools[t].length);
-      const reel = Array.from({ length: 60 }, (_, i) => {
-        if (i === 52) return d.catalog_id;
-        let x = Math.random() * avail.reduce((s, [, v]) => s + v, 0);
-        for (const [t, v] of avail) { x -= v; if (x < 0) return cos(pools[t]); }
-        return cos(pools[avail[0][0]]);
-      }).map((id) => ({ tier: CAT.items[id].tier, image_url: CAT.items[id].image, name: CAT.items[id].name }));
+      const reel = Array.from({ length: 60 }, (_, i) => (i === 52 ? d.catalog_id : pickCos()))
+        .map((id) => ({ tier: CAT.items[id].tier, image_url: CAT.items[id].image, name: CAT.items[id].name }));
       drops.push({ drop_id: r.nonce, items: [view(it)], reel, stop_index: 52, pity_applied: applied });
     }
+    p.pity[c.id] = [se, sl];
     if (!p.luck_left) p.luck_mult = null;
     p.total_spins += count;
     addXp(ME, 10 * count);
     bump(ME, "spins", count);
     questProgress(ME, "spin3", count);
-    logRoll(ME, "spin", r, { level, case_id: b.case_id, tiers: drops.map((d) => d.items[0].tier) });
+    logRoll(ME, "spin", r, { case_id: c.id, tiers: drops.map((d) => d.items[0].tier) });
     const [e2, ts2] = energy(ME);
-    return { drops, fair: fairOf(r), balance_cents: p.balance, energy: { now: e2, max: CFG.energy.max, next_at: e2 >= CFG.energy.max ? null : ts2 + CFG.energy.regen_minutes * 60 }, overflow: toOver };
+    return { drops, fair: fairOf(r), balance_cents: p.balance, energy: { now: e2, max: CFG.energy.max, next_at: e2 >= CFG.energy.max ? null : ts2 + CFG.energy.regen_minutes * 60 },
+      overflow: toOver, luck_used: luckUsed ? Math.round(luckUsed * 100) / 100 : null, pity: casePity(c.id) };
   });
 
   route("GET", "/fair", () => {
@@ -513,8 +584,7 @@
   });
   route("POST", "/items/sell", (b) => {
     const rows = owned(ME, b.item_ids.map(Number));
-    if (rows.length > 1 && rows.some((r) => atLeast(r.tier, "legendary"))) fail("BAD_REQUEST", "Легендарные и выше продаются только по одному.");
-    if (rows.length === 1 && atLeast(rows[0].tier, "legendary") && !b.confirmed) fail("CONFIRM_REQUIRED", "Подтверди продажу.", { pause_s: atLeast(rows[0].tier, "mythic") ? 3 : 0 });
+    if (rows.some((r) => atLeast(r.tier, "legendary")) && !b.confirmed) fail("CONFIRM_REQUIRED", "Продать? Отменить можно 10 минут.");
     let total = 0;
     const states = {};
     rows.forEach((r) => { total += quickSell(price(r.catalog_id, r.wear, r.stattrak)); states[r.id] = [r.hold_until, r.overflow_until]; r.state = "gone"; r.events.push(["sold_system", now()]); });
@@ -545,38 +615,53 @@
   function dupes() {
     const g = {};
     itemsOf(ME).filter((i) => i.state === "free" && !i.locked).forEach((i) => (g[i.catalog_id + i.wear + i.stattrak] = g[i.catalog_id + i.wear + i.stattrak] || []).push(i));
-    return Object.values(g).flatMap((arr) => arr.sort((a, b) => (a.float_value ?? 1) - (b.float_value ?? 1)).slice(1).filter((i) => !atLeast(i.tier, "legendary")));
+    return Object.values(g).flatMap((arr) => arr.sort((a, b) => (a.float_value ?? 1) - (b.float_value ?? 1)).slice(1));
   }
   route("POST", "/items/sell-duplicates/quote", () => { const d = dupes(); return { item_ids: d.map((i) => i.id), total_cents: d.reduce((s, i) => s + view(i).sell_cents, 0) }; });
   route("POST", "/items/sell-cheaper/quote", (b) => {
-    const d = itemsOf(ME).filter((i) => i.state === "free" && !i.locked && !atLeast(i.tier, "legendary") && view(i).price_cents < b.max_cents);
+    const d = itemsOf(ME).filter((i) => i.state === "free" && !i.locked && view(i).price_cents < b.max_cents);
     return { item_ids: d.map((i) => i.id), total_cents: d.reduce((s, i) => s + view(i).sell_cents, 0) };
+  });
+  function groupQuote(group) {
+    if (!CFG.sell_quick.groups.some((g) => g.id === group)) fail("BAD_REQUEST", "Такой группы нет.");
+    const rows = itemsOf(ME).filter((i) => i.state === "free" && !i.locked && !(i.hold_until && i.hold_until > now()) && (group === "all" || i.tier === group)).sort((a, b) => a.id - b.id);
+    return { group, item_ids: rows.map((i) => i.id), count: rows.length, total_cents: rows.reduce((s, i) => s + view(i).sell_cents, 0), confirm_required: rows.some((i) => atLeast(i.tier, "legendary")) };
+  }
+  route("GET", "/items/sell-groups", () => ({ groups: CFG.sell_quick.groups.map((g) => { const q = groupQuote(g.id); return { id: g.id, label: g.label, count: q.count, total_cents: q.total_cents }; }) }));
+  route("POST", "/items/sell-group/quote", (b) => groupQuote(String(b.group)));
+  route("POST", "/banners/:id/click", (b, q, id) => {
+    const bn = CFG.banners.list.find((x) => x.id === String(id));
+    if (!bn || !CFG.banners.enabled) fail("NOT_FOUND", "Баннер не найден.");
+    return { url: bn.url };
   });
   route("POST", "/showcase", (b) => { if (b.item_ids.length > 3) fail("BAD_REQUEST", "На витрине до 3 предметов."); P(ME).showcase = b.item_ids; return { showcase: b.item_ids }; });
 
+  function contractRows(ids) {
+    const cc = CFG.contracts;
+    if (ids.length < cc.min_items || ids.length > cc.max_items) fail("BAD_REQUEST", `В контракт нужно от ${cc.min_items} до ${cc.max_items} предметов любой редкости.`);
+    const rows = owned(ME, ids);
+    const total = rows.reduce((s, r) => s + price(r.catalog_id, r.wear, r.stattrak), 0);
+    if (total > CT_MAX_TOTAL) fail("BAD_REQUEST", `Контракт дороже ${money(CT_MAX_TOTAL)} не собрать. Убери самый дорогой предмет.`);
+    return [rows, total];
+  }
+  route("POST", "/contracts/quote", (b) => {
+    const [rows, total] = contractRows(b.item_ids.map(Number));
+    const w = CFG.contracts.multipliers.reduce((s, m) => s + m[1], 0);
+    return { total_cents: total, min_cents: Math.round(total * CFG.contracts.multipliers[0][0]), max_cents: Math.round(total * CFG.contracts.multipliers[CFG.contracts.multipliers.length - 1][0]),
+      ev_cents: Math.round((total * CFG.contracts.multipliers.reduce((s, [m, x]) => s + m * x, 0)) / w), confirm_required: rows.some((r) => atLeast(r.tier, CFG.upgrader.confirm_from)) };
+  });
   route("POST", "/contracts", (b) => {
     const ids = b.item_ids.map(Number);
-    if (ids.length !== 5) fail("BAD_REQUEST", "Нужно ровно 5 предметов.");
-    const rows = owned(ME, ids);
-    const tier = rows[0].tier;
-    if (rows.some((r) => r.tier !== tier)) fail("BAD_REQUEST", "Все 5 предметов должны быть одной ступени.");
-    if (!CFG.contracts.next[tier]) fail("BAD_REQUEST", "Эту ступень контрактом не поднять.");
-    if (atLeast(tier, "epic") && !b.confirmed) fail("CONFIRM_REQUIRED", "Пять предметов исчезнут, взамен придёт один.", { pause_s: 3 });
+    const [rows, total] = contractRows(ids);
+    if (rows.some((r) => atLeast(r.tier, CFG.upgrader.confirm_from)) && !b.confirmed) fail("CONFIRM_REQUIRED", `Предметы на ${money(total)} исчезнут, взамен придёт один.`);
     const r = rng(ME);
-    const guaranteed = rank(tier) <= rank(CFG.contracts.guaranteed_up_to);
-    const success = guaranteed || r.random() < CFG.contracts.success_pct / 100;
-    const outTier = success ? CFG.contracts.next[tier] : tier;
-    const src = CAT.items[r.choice(rows).catalog_id];
-    const pool = [...new Set(src.cases.flatMap((cid) => (cases[cid] ? cases[cid].pools[outTier] : [])))].sort();
-    const it = CAT.items[r.choice(pool)];
-    const floats = rows.map((x) => x.float_value).filter((f) => f != null);
-    const fv = it.wears && it.wears.length && floats.length ? +(it.min_float + (floats.reduce((a, x) => a + x, 0) / floats.length) * (it.max_float - it.min_float)).toFixed(6) : null;
-    const d = makeDrop(r, it, !!it.stattrak && rows.every((x) => x.stattrak), fv);
+    const [d, mult] = contract(r, rows.map((x) => ({ price: price(x.catalog_id, x.wear, x.stattrak), float_value: x.float_value, stattrak: x.stattrak })));
     rows.forEach((x) => (x.state = "gone"));
     const item = addItem(ME, d, "contract");
+    if (atLeast(d.tier, "epic")) db.feed.push(item.id);
     questProgress(ME, "contract1", 1, true);
-    logRoll(ME, "contract", r, { success });
-    return { success, chance_pct: guaranteed ? 100 : CFG.contracts.success_pct, item: view(item), fair: fairOf(r) };
+    logRoll(ME, "contract", r, { mult, total, price: d.price });
+    return { mult, total_cents: total, item: view(item), fair: fairOf(r), balance_cents: P(ME).balance };
   });
 
   route("GET", "/upgrades/targets", (b, q) => {
@@ -608,9 +693,7 @@
     if (counter(ME, "upg") >= u.per_day) fail("DAILY_LIMIT", "На сегодня апгрейды закончились. Возвращайся завтра.");
     const q = upQuote(b);
     if (b.quote_chance_pct != null && Math.abs(b.quote_chance_pct - q.chance * 100) > 0.01) fail("CONFIG_CHANGED", "Цены обновились, шанс изменился.");
-    if (q.confirm && !b.confirmed) fail("CONFIRM_REQUIRED", "Точно? Ставка сгорит при неудаче.", { pause_s: u.confirm_pause_s });
-    const total = itemsOf(ME).reduce((s, r) => s + price(r.catalog_id, r.wear, r.stattrak), 0) + P(ME).balance;
-    if (q.stake > total * u.max_share_of_collection) fail("BAD_REQUEST", "За раз можно поставить не больше половины коллекции и баланса.");
+    if (q.confirm && !b.confirmed) fail("CONFIRM_REQUIRED", "Точно? Ставка сгорит при неудаче.");
     if (q.coins) charge(ME, q.coins, "upgrade_stake");
     q.rows.forEach((r) => (r.state = "gone"));
     const r = rng(ME);

@@ -84,7 +84,7 @@ CREATE TABLE IF NOT EXISTS items (
     frozen         INTEGER NOT NULL DEFAULT 0,
     hold_until     REAL,
     overflow_until REAL,
-    origin         TEXT NOT NULL,                  -- case:<id>, level:<id>, free, attempt, upgrade, contract, market, trade, wheel, raffle
+    origin         TEXT NOT NULL,                  -- case:<id>, free, attempt, upgrade, contract, market, trade, wheel, raffle
     origin_ref     INTEGER,
     drop_price     INTEGER NOT NULL,
     created_at     REAL NOT NULL,
@@ -365,6 +365,22 @@ CREATE TABLE IF NOT EXISTS config_versions (
     created_by INTEGER,
     created_at REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS pity_counters (          -- мягкие гарантии у каждого кейса свои
+    user_id          INTEGER NOT NULL REFERENCES users(id),
+    case_id          TEXT NOT NULL,
+    since_epic       INTEGER NOT NULL DEFAULT 0,
+    since_legendary  INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, case_id)
+);
+
+CREATE TABLE IF NOT EXISTS banner_clicks (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    banner_id  TEXT NOT NULL,
+    user_id    INTEGER,
+    ts         REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS banner_clicks_banner ON banner_clicks(banner_id, ts);
 
 CREATE TABLE IF NOT EXISTS jobs (
     name     TEXT PRIMARY KEY,
